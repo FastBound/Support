@@ -49,141 +49,11 @@ param(
     [string]$Server = "https://cloud.fastbound.com"
 )
 
-# Header row of our Items Download Search Results file
-$csvFields = @(
-    "ItemNumber",
-    "Status",
-    "Manufacturer",
-    "Importer",
-    "CountryOfManufacture",
-    "Model",
-    "Type",
-    "Caliber",
-    "Serial",
-    "BarrelLength",
-    "OverallLength",
-    "MPN",
-    "UPC",
-    "SKU",
-    "Condition",
-    "Location",
-    "Cost",
-    "Price",
-    "LocationVerifiedUtc",
-    "DoNotDispose",
-    "Acquire_Date",
-    "AcquisitionType",
-    "Acquire_License",
-    "Acquire_LicenseName",
-    "Acquire_LicenseExpires",
-    "Acquire_TradeName",
-    "Acquire_Organization",
-    "Acquire_FirstName",
-    "Acquire_MiddleName",
-    "Acquire_LastName",
-    "Acquire_Address1",
-    "Acquire_Address2",
-    "Acquire_City",
-    "Acquire_State",
-    "Acquire_Postal",
-    "Acquire_Country",
-    "Acquire_PhoneNumber",
-    "Acquire_Fax",
-    "Acquire_EmailAddress",
-    "Acquire_PurchaseOrderNumber",
-    "Acquire_InvoiceNumber",
-    "Acquire_ShipmentTrackingNumber",
-    "Dispose_Date",
-    "DispositionType",
-    "Dispose_License",
-    "Dispose_LicenseName",
-    "Dispose_LicenseExpires",
-    "Dispose_TradeName",
-    "Dispose_Organization",
-    "Dispose_FirstName",
-    "Dispose_MiddleName",
-    "Dispose_LastName",
-    "Dispose_Address1",
-    "Dispose_Address2",
-    "Dispose_City",
-    "Dispose_State",
-    "Dispose_Postal",
-    "Dispose_Country",
-    "Dispose_PhoneNumber",
-    "Dispose_Fax",
-    "Dispose_EmailAddress",
-    "TTSN",
-    "OTSN",
-    "Dispose_PurchaseOrderNumber",
-    "Dispose_InvoiceNumber",
-    "Dispose_ShipmentTrackingNumber",
-    "SubmissionDate",
-    "TheftLoss_DiscoveredDate",
-    "TheftLoss_Type",
-    "TheftLoss_ATFIssuedIncidentNumber",
-    "TheftLoss_PoliceIncidentNumber",
-    "Destroyed_Date",
-    "Destroyed_Description",
-    "Destroyed_Witness1",
-    "Destroyed_Witness2",
-    "DeleteType",
-    "DeleteNote",
-    "UndeleteNote",
-    "LightspeedSystemID",
-    "LightspeedItemID",
-    "LightspeedSerialID",
-    "LightspeedSaleID",
-    "Id",
-    "ExternalId",
-    "Notes"
-)
+$csvData = Import-Csv -Path $File
+$resultsFileName = $File -replace '.csv$', '.results.csv'
+$resultsFile = New-Item -Path $resultsFileName -ItemType File -Force
+Add-Content -Path $resultsFile.FullName -Value "ID,ExternalID,ItemDetailsURL,HTTPStatusCode,HTTPResponseMessage"
 
-# Fields you can update through the API
-$allowedFields = @(
-    "Acquire_InvoiceNumber",
-    "Acquire_PurchaseOrderNumber",
-    "Acquire_ShipmentTrackingNumber",
-    "AcquisitionType",
-    "BarrelLength",
-    "Condition",
-    "Cost",
-    "Dispose_InvoiceNumber",
-    "Dispose_PurchaseOrderNumber",
-    "Dispose_ShipmentTrackingNumber",
-    "DispositionType",
-    "DoNotDispose",
-    "ExternalId",
-    "ItemNumber",
-    "Location",
-    "MPN",
-    "Notes",
-    "OverallLength",
-    "Price",
-    "SKU",
-    "UPC"
-)
-
-$invalidFields = $Field | Where-Object { $_ -notin $allowedFields }
-if ($invalidFields.Count -gt 0) {
-    Write-Host "Error: The following fields cannot be updated with this tool:`n$($invalidFields -join ', ')`n"
-    Write-Host "Allowed fields:`n$($allowedFields -join ', ')`n"
-    exit
-}
-
-# Import CSV, skipping the header row
-$csvData = Import-Csv -Path $File # -Header $csvFields # | Select-Object -Skip 1
-
-$headerFields = $csvData[0].PSObject.Properties.Name
-
-if (-not (($headerFields -join ',') -eq ($csvFields -join ','))) {
-#if (-not ($headerFields -eq $csvFields)) {
-    Write-Host "Error: The header row of the CSV file does not match the expected fields."
-    Write-Host "Expected fields: $($csvFields -join ', ')"
-    Write-Host "Actual fields: $($headerFields -join ', ')"
-    exit
-}
-
-# Common headers for GET and PUT
 $headers = @{
     "User-Agent"    = "FastBound/Update-Items (Account $($Account))"
     "Authorization" = "Basic " + [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes(":$ApiKey"))
@@ -205,50 +75,69 @@ function Update-ItemWithRetry {
     $retryCount = 0
 
     while ($retryCount -lt $maxRetries) {
-
         Start-Sleep -Seconds $DelaySeconds
-        $getResponse = Invoke-RestMethod -Uri $url -Method Get -Headers $Headers -ResponseHeadersVariable ResponseHeaders
+        try {
+            $getResponse = Invoke-RestMethod -Uri $url -Method Get -Headers $Headers -ResponseHeadersVariable ResponseHeaders
 
-        # Check X-RateLimit-Remaining header and retry if needed
-        if ($ResponseHeaders.'X-RateLimit-Remaining' -le 2) {
-            Write-Host "Rate limit exceeded. Sleeping for $($retrySeconds) seconds and retrying..."
-            Start-Sleep -Seconds $retrySeconds
+            if ($ResponseHeaders.'X-RateLimit-Remaining' -le 2) {
+                Start-Sleep -Seconds $retrySeconds
+                $retryCount++
+                continue
+            }
+
+            foreach ($key in $FieldsToUpdate.Keys) {
+                $getResponse.$key = $FieldsToUpdate[$key]
+            }
+
+            Start-Sleep -Seconds $DelaySeconds
+            $putResponse = Invoke-RestMethod -Uri $url -Method Put -Headers $Headers -Body ($getResponse | ConvertTo-Json) -ContentType "application/json"
+            $statusCode = 200
+            $responseMessage = 'Success'
+        } catch {
+            $statusCode = $_.Exception.Response.StatusCode.Value__
+            $responseMessage = $_.Exception.Message
             $retryCount++
-            Write-Host "Retry $($retryCount) of $($maxRetries - 1)..."
-            continue
+            if ($statusCode -eq 429) { Start-Sleep -Seconds $retrySeconds }
         }
 
-        foreach ($key in $FieldsToUpdate.Keys) {
-            $getResponse.$key = $FieldsToUpdate[$key]
+        if ($statusCode -eq 200) {
+            break
         }
-
-        Start-Sleep -Seconds $DelaySeconds
-        $putResponse = Invoke-RestMethod -Uri $url -Method Put -Headers $Headers -Body ($getResponse | ConvertTo-Json) -ContentType "application/json"
-
-        # Break out of the retry loop if the update was successful
-        break
     }
+
+    return @{StatusCode = $statusCode; ResponseMessage = $responseMessage}
 }
 
+$startTime = Get-Date
+$totalItems = $csvData.Count
+$completedItems = 0
 
-$totalRows = $csvData.Count
-
-Write-Host "1 of $($totalRows): Skip header row"
-
-# Iterate through CSV rows and update items
-foreach ($index in 1..($totalRows - 1)) {
-
-    $row = $csvData[$index]
-
+foreach ($row in $csvData) {
+    $completedItems++
     $itemId = $row.Id
-
-    Write-Host "$($index + 1) of $($totalRows): $($Server)/$($Account)/Items/Details/$($itemId)"
-
+    $externalId = $row.ExternalId
+    $itemDetailsURL = "$($Server)/$($Account)/Items/Details/$($itemId)"
     $fieldsToUpdate = @{}
-
     foreach ($f in $Field) {
         $fieldsToUpdate[$f] = $row.$f
     }
 
-    Update-ItemWithRetry -ItemNumber $itemId -FieldsToUpdate $fieldsToUpdate -Headers $headers -Server $Server -DelaySeconds $DelaySeconds
+    $updateResult = Update-ItemWithRetry -ItemNumber $itemId -FieldsToUpdate $fieldsToUpdate -Headers $headers -Server $Server -DelaySeconds $DelaySeconds
+
+    $currentTime = Get-Date
+    $elapsedSeconds = ($currentTime - $startTime).TotalSeconds
+    $itemsRemaining = $totalItems - $completedItems
+    if ($completedItems -gt 1) {
+        $estimatedTotalSeconds = ($elapsedSeconds / $completedItems) * $totalItems
+        $eta = $startTime.AddSeconds($estimatedTotalSeconds)
+        $etaString = $eta.ToString("g")
+    } else {
+        $etaString = "Calculating..."
+    }
+
+    Write-Host "$($completedItems) of $($totalItems): $($Server)/$($Account)/Items/Details/$($itemId) ETA: $($etaString)"
+
+    Add-Content -Path $resultsFile.FullName -Value "$($itemId),$($externalId),$($itemDetailsURL),$($updateResult.StatusCode),$($updateResult.ResponseMessage)"
 }
+
+Write-Host "Update process completed. Results saved to: $($resultsFile.FullName)"
