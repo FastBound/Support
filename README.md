@@ -4,7 +4,7 @@ Welcome to the FastBound Support Repository! This repository is a resource hub d
 
 ## Repository Contents
 
-- **HTML Sample Labels**: Ready-to-use and easily customizable HTML templates for generating labels. These are designed to get you started quickly with common labeling tasks.
+- **Labels**: Ready-to-use and easily customizable HTML templates for [FastBound labels](https://fastbound.help/en/articles/1332831). These are designed to get you started quickly with common labeling tasks.
 - **Scripts**: Collection of scripts to enhance your interaction with the FastBound API, including automation scripts, data manipulation tools, and more.
 
 ## License
