@@ -1,86 +1,97 @@
 <style>
-#wrapper {
-width:100%;
-margin : .5em;
-}
-#fb-logo {
-float : left ;
-height:100%;
-line-height:150px;
-padding-right:1em;
-}
-.fb-label-logo{
-content:url("https://www.fastbound.com/files/FastBound_icon_black.svg");
-width:60px;
-}
-#gun-info {
-width:50%;
-float : left ;
-text-align: center;
-}
-#mfg {
-font-size:18px;
-font-weight: bold;
-padding-top:.5em;
-padding-bottom:.25em;
-line-height:100%;
-white-space:nowrap;
-}
-#model {
-font-size:9px;
-font-weight: normal;
-line-height:100%;
-white-space:nowrap;
-}
-#type-caliber {
-font-size:9px;
-font-weight: normal;
-line-height:100%;
-white-space:nowrap;
-}
-#item-number {
-font-size:9px;
-font-weight: normal;
-line-height:100%;
-white-space:nowrap;
-}
-#serial-number {
-font-size:9px;
-font-weight: normal;
-line-height:100%;
-white-space:nowrap;
-}
-#price {
-font-size:16px;
-font-weight: bold;
-line-height:100%;
-padding-top:.5em;
-white-space:nowrap;
-}
+    #wrapper {
+        height: 100%;
+        padding: 0px;
+        display: flex;
+        align-items: center;
+    }
+
+    #fb-logo {
+        flex: 1;
+        margin-right: 8px;
+    }
+
+    .fb-label-logo {
+        content: url("https://www.fastbound.com/files/FastBound_icon_black.svg");
+        width: 60px;
+    }
+
+    #gun-info {
+        flex: 1;
+        margin-left: 8px;
+    }
+
+    #mfg {
+        font-size: 18px;
+        font-weight: bold;
+        padding-top: 0px;
+        line-height: 100%;
+        white-space: nowrap;
+    }
+
+    #model {
+        font-size: 9px;
+        font-weight: normal;
+        padding-top: 3px;
+        line-height: 100%;
+        white-space: nowrap;
+    }
+
+    #type-caliber {
+        font-size: 9px;
+        font-weight: normal;
+        padding-top: 3px;
+        line-height: 100%;
+        white-space: nowrap;
+    }
+
+    #item-number {
+        font-size: 9px;
+        font-weight: normal;
+        padding-top: 3px;
+        line-height: 100%;
+        white-space: nowrap;
+    }
+
+    #serial-number {
+        font-size: 9px;
+        font-weight: normal;
+        padding-top: 3px;
+        line-height: 100%;
+        white-space: nowrap;
+    }
+
+    #price {
+        font-size: 16px;
+        font-weight: bold;
+        line-height: 100%;
+        padding-top: 5px;
+        white-space: nowrap;
+    }
 </style>
-<div id="wrapper" >
-     <div id="fb-logo">
-          <img class="fb-label-logo">
-     </div> 
-     <div id="gun-info" >
-          <div id="mfg" >
-               <manufacturer>
-           </div>          
-          <div id="model">
-               <model>
-          </div>
-          <div id="type-caliber">
-               <type> - <caliber>
-          </div>
-          <div id="item-number">
-               Item: <item_number>
-          </div>
-          <div id="serial-number">
-               Serial: <code><serial></code>
-          </div>
-          <div id="price">
-               <price>
-          </div>
-     </div>
+<div id="wrapper">
+    <div id="fb-logo">
+        <img class="fb-label-logo">
+    </div>
+    <div id="gun-info">
+        <div id="mfg">
+            <manufacturer>
+        </div>
+        <div id="model">
+            <model>
+        </div>
+        <div id="type-caliber">
+            <type> - <caliber>
+        </div>
+        <div id="item-number">
+            Item: <item_number>
+        </div>
+        <div id="serial-number">
+            Serial: <code><serial></code>
+        </div>
+        <div id="price">
+            <price>
+        </div>
+    </div>
 </div>
-<div style="clear: both;" > </div>
+<div style="clear: both;"> </div>
