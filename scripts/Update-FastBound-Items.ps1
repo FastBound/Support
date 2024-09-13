@@ -30,7 +30,6 @@ Specifies the FastBound server URL. Default is "https://cloud.fastbound.com".
 .\Update-Items.ps1 -File "items.csv" -Account 12345 -ApiKey "your_api_key" -AuditUser "user@example.com" -Field "Price", "Location"
 
 This command updates items specified in "items.csv" for the account number 12345. It updates the "Price" and "Location" fields for each item in the CSV file.
-
 #>
 
 param(
@@ -52,11 +51,11 @@ param(
 $csvData = Import-Csv -Path $File
 $resultsFileName = $File -replace '.csv$', '.results.csv'
 $resultsFile = New-Item -Path $resultsFileName -ItemType File -Force
-Add-Content -Path $resultsFile.FullName -Value "ID,ExternalID,ItemDetailsURL,HTTPStatusCode,HTTPResponseMessage"
+Add-Content -Path $resultsFile.FullName -Value "ID,ExternalID,ItemDetailsURL,Status,Message"
 
 $headers = @{
     "User-Agent"    = "FastBound/Update-Items (Account $($Account))"
-    "Authorization" = "Basic " + [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes(":$ApiKey"))
+    "Authorization" = "Basic " + [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes(":$($ApiKey)"))
     "X-AuditUser"   = $AuditUser
 }
 
@@ -77,16 +76,44 @@ function Update-ItemWithRetry {
     while ($retryCount -lt $maxRetries) {
         Start-Sleep -Seconds $DelaySeconds
         try {
+            # GET the current data from the server
+            Write-Host "Fetching current data for Item $($ItemNumber) with GET request..."
             $getResponse = Invoke-RestMethod -Uri $url -Method Get -Headers $Headers -ResponseHeadersVariable ResponseHeaders
 
             if ($ResponseHeaders.'X-RateLimit-Remaining' -le 2) {
                 Start-Sleep -Seconds $retrySeconds
+                Write-Host "Rate limit reached, retrying..."
                 $retryCount++
                 continue
             }
 
+            # Compare the current data with the CSV, making everything case-insensitive
+            $changesDetected = $false
             foreach ($key in $FieldsToUpdate.Keys) {
-                $getResponse.$key = $FieldsToUpdate[$key]
+                $lowerKey = $key.ToLower()
+
+                # Normalize both the GET response and the CSV value to handle case-insensitive field names
+                $apiValue = $getResponse.PSObject.Properties[$lowerKey].Value
+                $csvValue = $FieldsToUpdate[$key]
+
+                # Compare values in a case-insensitive manner if they are strings
+                if (([string]$apiValue).ToLower() -ne ([string]$csvValue).ToLower()) {
+                    $changesDetected = $true
+                    break
+                }
+            }
+
+            if (-not $changesDetected) {
+                # If no changes are detected, log 304 and skip PUT
+                Write-Host "No changes detected for Item $($ItemNumber). Skipping update."
+                return @{StatusCode = 304; ResponseMessage = 'Not Modified'}
+            }
+
+            # If changes are detected, update the item
+            Write-Host "Changes detected for Item $($ItemNumber). Preparing to update..."
+            foreach ($key in $FieldsToUpdate.Keys) {
+                $lowerKey = $key.ToLower()
+                $getResponse.PSObject.Properties[$lowerKey].Value = $FieldsToUpdate[$key]
             }
 
             Start-Sleep -Seconds $DelaySeconds
@@ -96,8 +123,12 @@ function Update-ItemWithRetry {
         } catch {
             $statusCode = $_.Exception.Response.StatusCode.Value__
             $responseMessage = $_.Exception.Message
+            Write-Host "Error updating Item $($ItemNumber): $responseMessage (Status: $statusCode)"
             $retryCount++
-            if ($statusCode -eq 429) { Start-Sleep -Seconds $retrySeconds }
+            if ($statusCode -eq 429) { 
+                Write-Host "Rate limit hit, retrying after $($retrySeconds) seconds."
+                Start-Sleep -Seconds $retrySeconds 
+            }
         }
 
         if ($statusCode -eq 200) {
@@ -118,8 +149,11 @@ foreach ($row in $csvData) {
     $externalId = $row.ExternalId
     $itemDetailsURL = "$($Server)/$($Account)/Items/Details/$($itemId)"
     $fieldsToUpdate = @{}
+
+    # Handle case-insensitive fields by converting all keys in CSV and -Field to lowercase
     foreach ($f in $Field) {
-        $fieldsToUpdate[$f] = $row.$f
+        $lowerField = $f.ToLower()
+        $fieldsToUpdate[$lowerField] = $row.PSObject.Properties[$f].Value
     }
 
     $updateResult = Update-ItemWithRetry -ItemNumber $itemId -FieldsToUpdate $fieldsToUpdate -Headers $headers -Server $Server -DelaySeconds $DelaySeconds
