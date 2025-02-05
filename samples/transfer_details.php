@@ -90,7 +90,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     // If a record is found, create the response array
     $response = [
-        "$schema" => "https://www.fastbound.com/schemas/transfers-v1.json", 
+        "$schema" => "https://schemas.fastbound.org/transfers-v1.json", 
         "success" => true, // Set success to true
         "transferor" => $record['transferor'], // "1-22-333-44-5J-66666" -- transferor's FFL number, FastBound will take care of the rest 
         "tracking_number" => $record['tracking_number'], // "1Z999AA10123456789" -- FastBound will create a link to a UPS, FedEx, DHL, or USPS tracking number
