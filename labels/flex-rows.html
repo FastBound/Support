@@ -1,0 +1,39 @@
+<style>
+    .rows {
+        display: flex;
+        flex-direction: column;
+        width: 100%;
+        height: 100%;
+    }
+	
+    .row {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        align-items: center;
+        text-align: center;
+        padding: 0.125in;
+    }
+
+    .row img {
+        max-width: 100%;
+        max-height: 100%;
+        object-fit: contain;
+        filter: grayscale(100%);
+    }
+</style>
+
+<div class="rows">
+    <div class="row">
+        <img src="https://www.fastbound.com/files/FastBound_icon_black.svg" />
+    </div>
+    <div class="row">
+        <barcode_serial>
+				Serial <serial>
+    </div>
+    <div class="row">
+        <qrcode_quick_code>
+				Scan for warranty,<br /> accessories, and more!
+    </div>
+</div>
