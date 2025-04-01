@@ -18,22 +18,25 @@ The name of the column in the CSV file that contains FastBound item IDs. Default
 The name of the column in the CSV file that contains external IDs to be set. Default is "ExternalId".
 
 .PARAMETER AccountNumber
-The FastBound account number where the items will be updated. Mandatory when -UpdateItems is used.
+The FastBound account number where the items will be updated. Required when -UpdateItems is used.
 
 .PARAMETER ApiKey
-The API key for authentication with the FastBound API. Mandatory when -UpdateItems is used.
+The API key for authentication with the FastBound API. Required when -UpdateItems is used.
 
-.PARAMETER ApiKey
-The FastBound user who updated the item(s). Mandatory when -UpdateItems is used.
+.PARAMETER AuditUser
+The FastBound user who updated the item(s). Required when -UpdateItems is used.
 
 .PARAMETER UpdateItems
 A switch parameter. When present, the script will issue PUT requests to update the items. External IDs that are null/empty/whitespace will be set to NULL.
 
-.PARAMETER GenerateExternals
+.PARAMETER GenerateAllExternals
 A switch parameter. When present, the script will generate external IDs if all existing external IDs are null/empty/whitespace and save them back to the CSV file.
 
+.PARAMETER GenerateMissingExternals
+A switch parameter. When present, the script will generate external IDs only for items where the external ID is null/empty/whitespace, leaving existing external IDs unchanged.
+
 .PARAMETER FirstExternalId
-The starting numerical ID -GenerateExternals will generate external IDs from. Default is 100.
+The starting numerical ID -GenerateAllExternals or -GenerateMissingExternals will generate external IDs from. Default is 100.
 
 .EXAMPLE
 .\FastBound-UpdateExternals.ps1 -CsvFile "items.csv" -UpdateItems -AccountNumber 12345 -ApiKey "your-api-key"
@@ -41,12 +44,12 @@ The starting numerical ID -GenerateExternals will generate external IDs from. De
 This example processes "items.csv" to update external IDs for items with the specified FastBound account number and API key. It requires both AccountNumber and ApiKey to be provided due to the -UpdateItems switch.
 
 .EXAMPLE
-.\FastBound-UpdateExternals.ps1 -CsvFile "items.csv" -GenerateExternals
+.\FastBound-UpdateExternals.ps1 -CsvFile "items.csv" -GenerateAllExternals
 
 This example processes "items.csv" to generate external IDs and save them back to the CSV file. They are NOT updated on the server without -UpdateItems.
 
 .EXAMPLE
-.\FastBound-UpdateExternals.ps1 -CsvFile "items.csv" -GenerateExternals -UpdateItems -UpdateItems -AccountNumber 123456 -ApiKey "your-api-key"
+.\FastBound-UpdateExternals.ps1 -CsvFile "items.csv" -GenerateAllExternals -UpdateItems -UpdateItems -AccountNumber 123456 -ApiKey "your-api-key"
 
 This example processes "items.csv" to generate external IDs, save them back to the CSV file, and update FastBound account 123456.
 
@@ -81,7 +84,10 @@ param (
     [Switch]$UpdateItems,
 
     [Parameter()]
-    [Switch]$GenerateExternals,
+    [Switch]$GenerateAllExternals,
+
+    [Parameter()]
+    [Switch]$GenerateMissingExternals,
 
     [Parameter()]
     [int]$FirstExternalId = 100
@@ -123,10 +129,17 @@ $jsonPayloads = @()
 # Initialize a flag to determine if all ExternalIDs are null/empty/whitespace
 $allExternalsEmpty = $true
 
-# Check if AccountNumber and ApiKey are mandatory when -UpdateItems is used
-if ($UpdateItems -and (-not $AccountNumber -or -not $ApiKey -or -not $AuditUser)) {
-    Write-Error "AccountNumber, ApiKey, and AuditUser are mandatory when using -UpdateItems switch."
-    exit 1
+# Check if AccountNumber, ApiKey, and AuditUser are provided when -UpdateItems is used
+if ($UpdateItems) {
+    $missingParams = @()
+    if (-not $AccountNumber) { $missingParams += "AccountNumber" }
+    if (-not $ApiKey) { $missingParams += "ApiKey" }
+    if (-not $AuditUser) { $missingParams += "AuditUser" }
+
+    if ($missingParams.Count -gt 0) {
+        Write-Error "The following parameters are required when using -UpdateItems: $($missingParams -join ', ')"
+        exit 1
+    }
 }
 
 # Iterate through the CSV data and construct JSON payloads
@@ -147,12 +160,18 @@ foreach ($row in $csvData) {
     $jsonPayloads += $jsonPayload
 }
 
-# Generate external IDs if the -GenerateExternals switch is passed and all existing ExternalIDs are null/empty/whitespace
-if ($GenerateExternals -and !$allExternalsEmpty) {
-    Write-Error "In order to -GenerateExternals, all $($ExternalIdColumnName) values must be empty."
+# Validate that GenerateAllExternals and GenerateMissingExternals are not used together
+if ($GenerateAllExternals -and $GenerateMissingExternals) {
+    Write-Error "Cannot use -GenerateAllExternals and -GenerateMissingExternals together. Please use only one of these switches."
     exit 1
 }
-elseif ($GenerateExternals -and $allExternalsEmpty) {
+
+# Generate external IDs if the -GenerateAllExternals switch is passed and all existing ExternalIDs are null/empty/whitespace
+if ($GenerateAllExternals -and !$allExternalsEmpty) {
+    Write-Error "In order to -GenerateAllExternals, all $($ExternalIdColumnName) values must be empty."
+    exit 1
+}
+elseif ($GenerateAllExternals -and $allExternalsEmpty) {
     $currentExternalId = $FirstExternalId
 
     # Iterate through the CSV data and assign numerical ExternalIDs
@@ -162,6 +181,28 @@ elseif ($GenerateExternals -and $allExternalsEmpty) {
 
     # Export the modified CSV data back to the original CSV file
     $csvData | Export-Csv -Path $CsvFile -NoTypeInformation
+}
+# Generate external IDs only for missing values if -GenerateMissingExternals is used
+elseif ($GenerateMissingExternals) {
+    $currentExternalId = $FirstExternalId
+    $modified = $false
+
+    # Iterate through the CSV data and assign numerical ExternalIDs only to empty values
+    foreach ($row in $csvData) {
+        if ([string]::IsNullOrWhiteSpace($row.$ExternalIdColumnName)) {
+            $row.$ExternalIdColumnName = $currentExternalId++
+            $modified = $true
+        }
+    }
+
+    # Only export if we made changes
+    if ($modified) {
+        $csvData | Export-Csv -Path $CsvFile -NoTypeInformation
+        Write-Host "Generated external IDs for items with missing values."
+    }
+    else {
+        Write-Host "No items found with missing external IDs."
+    }
 }
 
 # Issue PUT requests to update items only if the -UpdateItems switch is present
@@ -191,4 +232,3 @@ if ($UpdateItems) {
         Start-Sleep -Seconds 1
     }
 }
-
