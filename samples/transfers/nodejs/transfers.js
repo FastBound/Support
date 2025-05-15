@@ -89,11 +89,12 @@ function generateIdempotencyKey(shipmentDate, transferor, transferee, trackingNu
 // Send POST request
 function sendPostRequest(jsonPayload) {
     const authString = Buffer.from(`${USERNAME}:${PASSWORD}`).toString('base64');
+    const url = new URL(API_URL);
 
     const options = {
         method: 'POST',
-        hostname: 'dev.fastbound.dev',
-        path: '/api/transfers',
+        hostname: url.hostname,
+        path: url.pathname,
         headers: {
             'Content-Type': 'application/json',
             'Authorization': `Basic ${authString}`
