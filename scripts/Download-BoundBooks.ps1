@@ -3,7 +3,7 @@
     PowerShell script to automate the download of A&D records from one or more FastBound accounts.
 
 .DESCRIPTION
-    For users who can't or don't want to use Cloud file hosting services like Dropbox, DownloadFastBoundBooks makes it easy to manage multiple FastBound accounts stored securely in a Secret Vault and download the latest copy of your bound book A&D records daily per ATF Ruling 2016-1.
+    For users who can't or don't want to use Cloud file hosting services like Dropbox, DownloadFastBoundBooks makes it easy to manage multiple FastBound accounts stored securely in a PowerShell Secret Vault and download the latest copy of your bound book A&D records daily per ATF Ruling 2016-1.
     
     https://fastb.co/DownloadFastBoundBook carries this script's latest version, instructions for scheduling it, and an alternate download method with cURL.
 
@@ -14,44 +14,51 @@
     The folder to download the PDF files to. Default to the current folder.
 
 .PARAMETER Add
-    Add a new FastBound account to the Secret Vault.
+    Add a new FastBound account to the PowerShell Secret Vault.
 
 .PARAMETER Key
-    The key for the FastBound account that will be added to the Secret Vault.
+    The key for the FastBound account that will be added to the PowerShell Secret Vault.
 
 .PARAMETER Remove
-    Remove the specified FastBound account from the Secret Vault.
+    Remove the specified FastBound account from the PowerShell Secret Vault.
 
 .PARAMETER List
-    Output a list of FastBound accounts stored in the Secret Vault.
+    Output a list of FastBound accounts stored in the PowerShell Secret Vault.
 
 .PARAMETER Download
-    Download the latest bound book for each FastBound account in the Secret Vault. An exit code of 0 indicates that all downloads were successful. A non-zero exit code indicates that at least one download failed. 
+    Download the latest bound book for each FastBound account in the PowerShell Secret Vault. An exit code of 0 indicates that all downloads were successful. A non-zero exit code indicates that at least one download failed. 
 
 .PARAMETER Help
     Show the Get-Help output for this script.
 
 .PARAMETER SecretVault
-    The name of the Secret Vault. The default is "FastBound".
+    The name of the PowerShell Secret Vault. The default is "FastBound".
 
 .PARAMETER AuditUser
     The email address of a valid FastBound user account. Required by the -Download parameter.
 
+.PARAMETER VaultPassword
+    The password for the PowerShell Secret Vault. Required if the PowerShell Secret Store is configured to require a password.
+
 .EXAMPLE
     DownloadFastBoundBooks -Add FASTBOUND_ACCOUNT -Key FASTBOUND_API_KEY
-    Add FASTBOUND_ACCOUNT and FASTBOUND_API_KEY to the Secret Vault.
+    Add FASTBOUND_ACCOUNT and FASTBOUND_API_KEY to the PowerShell Secret Vault.
 
 .EXAMPLE
     DownloadFastBoundBooks -Remove FASTBOUND_ACCOUNT
-    Remove FASTBOUND_ACCOUNT from the Secret Vault.
+    Remove FASTBOUND_ACCOUNT from the PowerShell Secret Vault.
 
 .EXAMPLE
     DownloadFastBoundBooks -List
-    Output a list of FastBound accounts stored in the Secret Vault.
+    Output a list of FastBound accounts stored in the PowerShell Secret Vault.
 
 .EXAMPLE
     DownloadFastBoundBooks -Download -AuditUser user@example.com
-    Download the bound book for each FastBound account in the Secret Vault.
+    Download the bound book for each FastBound account in the PowerShell Secret Vault.
+
+.EXAMPLE
+    DownloadFastBoundBooks -Download -AuditUser user@example.com -VaultPassword "MyVaultPassword"
+    Download bound books using the vault password (for scheduled tasks when PowerShell Secret Store requires a password).
 #>
 
 param (
@@ -83,7 +90,10 @@ param (
     [string]$SecretVault = "FastBound",
 
     [Parameter(Position = 9, Mandatory = $false)]
-    [string]$AuditUser
+    [string]$AuditUser,
+
+    [Parameter(Position = 10, Mandatory = $false)]
+    [string]$VaultPassword
 )
 
 begin {
@@ -111,6 +121,30 @@ begin {
     if (!(Get-SecretVault -Name $SecretVault -ErrorAction SilentlyContinue)) {
         Register-SecretVault -Name $SecretVault -ModuleName Microsoft.PowerShell.SecretStore
     }
+
+    # If password is provided, unlock the SecretStore first
+    if ($VaultPassword) {
+        $securePassword = ConvertTo-SecureString $VaultPassword -AsPlainText -Force
+        Unlock-SecretStore -Password $securePassword
+    }
+
+    # Test access to the vault - if it fails due to password requirement, show helpful message
+    try {
+        $null = Test-SecretVault -Name $SecretVault -ErrorAction Stop
+    }
+    catch {
+        if ($_.Exception.Message -match 'password') {
+            Write-Host "The PowerShell Secret Store is configured to require a password." -ForegroundColor Red
+            Write-Host ""
+            Write-Host "You have two options:" -ForegroundColor Yellow
+            Write-Host "  1. Provide the vault password using the -VaultPassword parameter" -ForegroundColor Yellow
+            Write-Host "  2. Disable password authentication for automated/scheduled use:" -ForegroundColor Yellow
+            Write-Host "     Set-SecretStoreConfiguration -Authentication None -Interaction None -Confirm:`$false" -ForegroundColor Cyan
+            Write-Host ""
+            exit 1
+        }
+        # Other errors (like vault not found) can be ignored here - they'll surface later
+    }
 }
 
 process {
@@ -123,6 +157,9 @@ process {
         if (!$Key) {
             Write-Host "You must specify a key with -Key when adding an account." -ForegroundColor Red
             exit 1
+        }
+        if ($Key.Length -ne 43) {
+            Write-Host "Warning: Your API key doesn't look right--did you just copy part of the key?" -ForegroundColor Yellow
         }
         $secret = @{
             Name   = $Add
@@ -163,7 +200,7 @@ process {
             
                 if ($response) {
                     $pdfUrl = $response.url
-                    $pdfFileName = "$Output\$($account.Name).pdf"
+                    $pdfFileName = Join-Path $Output "$($account.Name).pdf"
                     Invoke-WebRequest -Uri $pdfUrl -OutFile $pdfFileName -UserAgent "DownloadFastBoundBooks"
                     Write-Host "Download successful for account $($account.Name)" -ForegroundColor Green
                 }
