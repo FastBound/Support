@@ -20,8 +20,8 @@ Specifies the email of a valid FastBound user for auditing purposes.
 .PARAMETER Field
 Specifies the fields to be updated. These fields must be allowed for updates through the API.
 
-.PARAMETER DelaySeconds
-Specifies the delay in seconds between API calls. Default is 1 second.
+.PARAMETER DelayMs
+Specifies the delay in milliseconds between API calls. Default is 1000 (1 second).
 
 .PARAMETER Server
 Specifies the FastBound server URL. Default is "https://cloud.fastbound.com".
@@ -44,7 +44,7 @@ param(
     [Parameter(Mandatory = $true)]
     [string[]]$Field,
 
-    [int]$DelaySeconds = 1,
+    [int]$DelayMs = 1000,
     [string]$Server = "https://cloud.fastbound.com"
 )
 
@@ -65,7 +65,7 @@ function Update-ItemWithRetry {
         [hashtable]$FieldsToUpdate,
         [hashtable]$Headers,
         [string]$Server,
-        [int]$DelaySeconds,
+        [int]$DelayMs,
         [int]$maxRetries = 15,
         [int]$retrySeconds = 6
     )
@@ -74,7 +74,7 @@ function Update-ItemWithRetry {
     $retryCount = 0
 
     while ($retryCount -lt $maxRetries) {
-        Start-Sleep -Seconds $DelaySeconds
+        Start-Sleep -Milliseconds $DelayMs
         try {
             # GET the current data from the server
             Write-Host "Fetching current data for Item $($ItemNumber) with GET request..."
@@ -111,23 +111,34 @@ function Update-ItemWithRetry {
 
             # If changes are detected, update the item
             Write-Host "Changes detected for Item $($ItemNumber). Preparing to update..."
+
+            # Clear invalid UPC (must be 11-18 digits, numbers only)
+            $upc = $getResponse.PSObject.Properties['upc'].Value
+            if ($upc -and ($upc -notmatch '^\d{11,18}$')) {
+                Write-Host "Invalid UPC '$upc' detected, setting to null."
+                $getResponse.PSObject.Properties['upc'].Value = $null
+            }
+
             foreach ($key in $FieldsToUpdate.Keys) {
                 $lowerKey = $key.ToLower()
                 $getResponse.PSObject.Properties[$lowerKey].Value = $FieldsToUpdate[$key]
             }
 
-            Start-Sleep -Seconds $DelaySeconds
             $putResponse = Invoke-RestMethod -Uri $url -Method Put -Headers $Headers -Body ($getResponse | ConvertTo-Json) -ContentType "application/json"
             $statusCode = 200
             $responseMessage = 'Success'
         } catch {
             $statusCode = $_.Exception.Response.StatusCode.Value__
             $responseMessage = $_.Exception.Message
+            $responseBody = $_.ErrorDetails.Message
             Write-Host "Error updating Item $($ItemNumber): $responseMessage (Status: $statusCode)"
+            if ($responseBody) {
+                Write-Host "Server response: $responseBody"
+            }
             $retryCount++
-            if ($statusCode -eq 429) { 
+            if ($statusCode -eq 429) {
                 Write-Host "Rate limit hit, retrying after $($retrySeconds) seconds."
-                Start-Sleep -Seconds $retrySeconds 
+                Start-Sleep -Seconds $retrySeconds
             }
         }
 
@@ -156,7 +167,7 @@ foreach ($row in $csvData) {
         $fieldsToUpdate[$lowerField] = $row.PSObject.Properties[$f].Value
     }
 
-    $updateResult = Update-ItemWithRetry -ItemNumber $itemId -FieldsToUpdate $fieldsToUpdate -Headers $headers -Server $Server -DelaySeconds $DelaySeconds
+    $updateResult = Update-ItemWithRetry -ItemNumber $itemId -FieldsToUpdate $fieldsToUpdate -Headers $headers -Server $Server -DelayMs $DelayMs
 
     $currentTime = Get-Date
     $elapsedSeconds = ($currentTime - $startTime).TotalSeconds
