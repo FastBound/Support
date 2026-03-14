@@ -22,7 +22,9 @@ struct Item {
     sku: String,
     mpn: String,
     upc: String,
+    #[serde(rename = "barrelLength")]
     barrel_length: f64,
+    #[serde(rename = "overallLength")]
     overall_length: f64,
     cost: f64,
     price: f64,
@@ -170,7 +172,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         items,
     };
 
-    let json_payload = serde_json::to_string_pretty(&payload)?;
+    let json_payload = serde_json::to_string(&payload)?;
     send_post_request(&json_payload).await?;
 
     Ok(())

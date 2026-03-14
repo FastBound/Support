@@ -16,9 +16,12 @@ def generate_idempotency_key(shipment_date, transferor, transferee, tracking_num
   Digest::SHA256.hexdigest(data)
 end
 
+# API endpoint
+API_URL = "https://cloud.fastbound.com/api/transfers"
+
 # Function to send a POST request
 def send_post_request(json_payload, username, password)
-  uri = URI.parse("https://cloud.fastbound.com/api/transfers")
+  uri = URI.parse(API_URL)
   request = Net::HTTP::Post.new(uri)
   request.content_type = "application/json"
   
@@ -35,6 +38,10 @@ def send_post_request(json_payload, username, password)
   # Print response
   puts "HTTP Code: #{response.code}"
   puts "Response: #{response.body}"
+
+  unless response.is_a?(Net::HTTPSuccess)
+    exit 1
+  end
 end
 
 # API Credentials (Replace with actual values)

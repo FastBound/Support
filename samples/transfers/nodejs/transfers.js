@@ -44,7 +44,7 @@ const payload = {
 };
 
 // Convert payload to JSON
-const jsonPayload = JSON.stringify(payload, null, 2);
+const jsonPayload = JSON.stringify(payload);
 
 // Send POST request
 sendPostRequest(jsonPayload);

@@ -58,8 +58,8 @@ items = [
 serial_numbers = [item["serial"] for item in items]
 
 # Other required fields
-transferor = "1-54-810-07-7B-25807"  # Replace with actual FFL number
-transferee = "9-68-067-07-5K-99999"  # Replace with actual FFL number
+transferor = "1-23-456-78-9A-12345"  # Replace with actual FFL number
+transferee = "1-23-456-78-9B-54321"  # Replace with actual FFL number
 tracking_number = "1Z999AA10123456784"  # Optional
 po_number = "PO123456"  # Optional
 invoice_number = "INV98765"  # Optional
@@ -98,7 +98,7 @@ data = {
 }
 
 # Convert data to JSON
-json_data = json.dumps(data, indent=2, separators=(",", ":"))
+json_data = json.dumps(data, separators=(",", ":"))
 
 # Create Basic Authentication header
 auth_header = b64encode(f"{USERNAME}:{PASSWORD}".encode()).decode()

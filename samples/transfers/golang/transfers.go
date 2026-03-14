@@ -115,7 +115,7 @@ func main() {
 		Items:            items,
 	}
 
-	jsonPayload, err := json.MarshalIndent(payload, "", "  ")
+	jsonPayload, err := json.Marshal(payload)
 	if err != nil {
 		fmt.Println("Error marshalling JSON:", err)
 		return

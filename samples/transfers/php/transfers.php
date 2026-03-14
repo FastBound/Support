@@ -94,7 +94,7 @@ $data = [
 ];
 
 // Convert data to JSON
-$jsonData = json_encode($data, JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRINT);
+$jsonData = json_encode($data, JSON_UNESCAPED_SLASHES);
 
 // Initialize cURL session
 $ch = curl_init($url);

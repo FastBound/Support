@@ -13,8 +13,8 @@ $Url = "https://cloud.fastbound.com/api/transfers"
 $ShipmentDate = (Get-Date -Format "yyyy-MM-dd")
 
 # Other required fields
-$Transferor = "1-54-810-07-7B-25807"   # Replace with actual FFL number
-$Transferee = "9-68-067-07-5K-99999"   # Replace with actual FFL number
+$Transferor = "1-23-456-78-9A-12345"   # Replace with actual FFL number
+$Transferee = "1-23-456-78-9B-54321"   # Replace with actual FFL number
 $TrackingNumber = "1Z999AA10123456784"  # Optional
 $PoNumber = "PO123456"                  # Optional
 $InvoiceNumber = "INV98765"             # Optional

@@ -41,7 +41,7 @@ class Program
             Items = items
         };
 
-        string jsonPayload = JsonSerializer.Serialize(payload, new JsonSerializerOptions { WriteIndented = true });
+        string jsonPayload = JsonSerializer.Serialize(payload);
         await SendPostRequest(jsonPayload);
     }
 

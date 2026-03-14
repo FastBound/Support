@@ -26,8 +26,8 @@ public class Transfers {
         String shipmentDate = LocalDate.now().toString(); // YYYY-MM-DD format
 
         // Other required fields
-        String transferor = "1-54-810-07-7B-25807";   // Replace with actual FFL number
-        String transferee = "9-68-067-07-5K-99999";   // Replace with actual FFL number
+        String transferor = "1-23-456-78-9A-12345";   // Replace with actual FFL number
+        String transferee = "1-23-456-78-9B-54321";   // Replace with actual FFL number
         String trackingNumber = "1Z999AA10123456784";  // Optional
         String poNumber = "PO123456";                  // Optional
         String invoiceNumber = "INV98765";             // Optional

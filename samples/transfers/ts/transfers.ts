@@ -49,8 +49,8 @@ interface TransferPayload {
 const shipmentDate = new Date().toISOString().split("T")[0]; // YYYY-MM-DD format
 
 // Other required fields
-const transferor = "1-54-810-07-7B-25807"; // Replace with actual FFL number
-const transferee = "9-68-067-07-5K-99999"; // Replace with actual FFL number
+const transferor = "1-23-456-78-9A-12345"; // Replace with actual FFL number
+const transferee = "1-23-456-78-9B-54321"; // Replace with actual FFL number
 const trackingNumber = "1Z999AA10123456784"; // Optional
 const poNumber = "PO123456"; // Optional
 const invoiceNumber = "INV98765"; // Optional
@@ -148,6 +148,10 @@ async function main() {
 
   console.log(`HTTP Code: ${response.status}`);
   console.log(`Response: ${responseBody}`);
+
+  if (!response.ok) {
+    process.exit(1);
+  }
 }
 
 main();
