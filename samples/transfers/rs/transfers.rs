@@ -1,8 +1,21 @@
+#!/usr/bin/env -S cargo +nightly -Zscript
+---
+[dependencies]
+tokio = { version = "1.0", features = ["full"] }
+reqwest = { version = "0.11", features = ["json"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+base64 = "0.21"
+sha2 = "0.10"
+chrono = "0.4"
+---
 // Reference implementation — not intended for production use without review and adaptation.
 // Source: https://github.com/FastBound/Support/tree/main/samples/transfers/rs
 //
-// Requires: Rust 1.70+
+// Requires: Rust 1.77+ (cargo script)
 // Dependencies: reqwest, tokio, serde, serde_json, sha2, base64, chrono
+//
+// Run: cargo +nightly -Zscript transfers.rs
 
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use chrono::Utc;
