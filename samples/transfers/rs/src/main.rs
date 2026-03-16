@@ -1,3 +1,9 @@
+// Reference implementation — not intended for production use without review and adaptation.
+// Source: https://github.com/FastBound/Support/tree/main/samples/transfers/rs
+//
+// Requires: Rust 1.70+
+// Dependencies: reqwest, tokio, serde, serde_json, sha2, base64, chrono
+
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use chrono::Utc;
 use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
@@ -5,15 +11,125 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::error::Error;
 
+// --- Demo usage ---
+
 const USERNAME: &str = "YOUR_USERNAME";
 const PASSWORD: &str = "YOUR_PASSWORD";
-const API_URL: &str = "https://cloud.fastbound.com/api/transfers";
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn Error>> {
+    let transferor = "1-23-456-78-9A-12345";
+    let transferee = "1-23-456-78-9B-54321";
+
+    let items = vec![
+        FastBoundTransferItem {
+            manufacturer: "Glock".into(),
+            importer: Some("Glock, Inc.".into()),
+            country: Some("Austria".into()),
+            model: "17".into(),
+            caliber: "9X19".into(),
+            item_type: "Pistol".into(),
+            serial: "ABC123456".into(),
+            sku: "GLK-G17".into(),
+            mpn: "PA1750203".into(),
+            upc: "764503022616".into(),
+            barrel_length: 4.48,
+            overall_length: 8.03,
+            cost: 500.00,
+            price: 650.00,
+            condition: "New".into(),
+            note: "Gen 5, nDLC finish, factory case, 3x17rd mags, loader, brush".into(),
+        },
+        FastBoundTransferItem {
+            manufacturer: "Smith & Wesson".into(),
+            importer: None,
+            country: None,
+            model: "M&P 9 Shield".into(),
+            caliber: "9MM".into(),
+            item_type: "Pistol".into(),
+            serial: "XYZ987654".into(),
+            sku: "S&W-SHIELD".into(),
+            mpn: "10035".into(),
+            upc: "022188864151".into(),
+            barrel_length: 3.1,
+            overall_length: 6.1,
+            cost: 450.00,
+            price: 600.00,
+            condition: "New".into(),
+            note: "No thumb safety, factory case, 7rd flush and 8rd extended mags".into(),
+        },
+    ];
+
+    let client = FastBoundTransferClient::new(USERNAME, PASSWORD, None);
+    let payload = FastBoundTransferPayload::create(
+        transferor,
+        transferee,
+        items,
+        vec!["transferee@example.com".into()],
+        Some("1Z999AA10123456784".into()),
+        Some("PO123456".into()),
+        Some("INV98765".into()),
+        "Purchase",
+        Some("2-unit dealer stock order, shipped UPS Ground insured, signature required on delivery".into()),
+    );
+
+    let result = client.send_transfer(&payload).await?;
+    println!("HTTP Code: {}", result.status_code);
+    println!("Response: {}", result.body);
+
+    Ok(())
+}
+
+// --- Reusable client ---
+
+struct FastBoundTransferClient {
+    api_url: String,
+    auth_header: String,
+}
+
+struct FastBoundTransferResult {
+    status_code: u16,
+    body: String,
+}
+
+impl FastBoundTransferClient {
+    fn new(username: &str, password: &str, api_url: Option<&str>) -> Self {
+        let url = api_url.unwrap_or("https://cloud.fastbound.com/api/transfers");
+        let auth = BASE64.encode(format!("{username}:{password}"));
+        Self {
+            api_url: url.into(),
+            auth_header: format!("Basic {auth}"),
+        }
+    }
+
+    async fn send_transfer(&self, payload: &FastBoundTransferPayload) -> Result<FastBoundTransferResult, Box<dyn Error>> {
+        let json_payload = serde_json::to_string(payload)?;
+
+        let mut headers = HeaderMap::new();
+        headers.insert(AUTHORIZATION, HeaderValue::from_str(&self.auth_header)?);
+        headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+
+        let client = reqwest::Client::new();
+        let response = client
+            .post(&self.api_url)
+            .headers(headers)
+            .body(json_payload)
+            .send()
+            .await?;
+
+        let status_code = response.status().as_u16();
+        let body = response.text().await?;
+        Ok(FastBoundTransferResult { status_code, body })
+    }
+}
+
+// --- Domain types ---
 
 #[derive(Debug, Serialize, Deserialize)]
-struct Item {
+struct FastBoundTransferItem {
     manufacturer: String,
     importer: Option<String>,
-    country: String,
+    country: Option<String>,
     model: String,
     caliber: String,
     #[serde(rename = "type")]
@@ -33,147 +149,66 @@ struct Item {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-struct TransferPayload {
+struct FastBoundTransferPayload {
     #[serde(rename = "$schema")]
     schema: String,
     idempotency_key: String,
     transferor: String,
     transferee: String,
     transferee_emails: Vec<String>,
-    tracking_number: String,
-    po_number: String,
-    invoice_number: String,
+    tracking_number: Option<String>,
+    po_number: Option<String>,
+    invoice_number: Option<String>,
     acquire_type: String,
-    note: String,
-    items: Vec<Item>,
+    note: Option<String>,
+    items: Vec<FastBoundTransferItem>,
 }
 
-fn generate_idempotency_key(
-    shipment_date: &str,
-    transferor: &str,
-    transferee: &str,
-    tracking_number: &str,
-    po_number: &str,
-    invoice_number: &str,
-    serial_numbers: &[String],
-) -> String {
-    let data = format!(
-        "{}\n{}\n{}\n{}\n{}\n{}\n{}",
-        shipment_date,
-        transferor,
-        transferee,
-        tracking_number,
-        po_number,
-        invoice_number,
-        serial_numbers.join("\n")
-    );
+impl FastBoundTransferPayload {
+    fn create(
+        transferor: &str, transferee: &str, items: Vec<FastBoundTransferItem>,
+        transferee_emails: Vec<String>,
+        tracking_number: Option<String>, po_number: Option<String>,
+        invoice_number: Option<String>, acquire_type: &str, note: Option<String>,
+    ) -> Self {
+        let idempotency_key = Self::build_idempotency_key(
+            transferor, transferee,
+            tracking_number.as_deref(), po_number.as_deref(),
+            invoice_number.as_deref(), &items,
+        );
+        Self {
+            schema: "https://schemas.fastbound.org/transfers-push-v1.json".into(),
+            idempotency_key,
+            transferor: transferor.into(),
+            transferee: transferee.into(),
+            transferee_emails,
+            tracking_number,
+            po_number,
+            invoice_number,
+            acquire_type: acquire_type.into(),
+            note,
+            items,
+        }
+    }
 
-    let mut hasher = Sha256::new();
-    hasher.update(data.as_bytes());
-    format!("{:x}", hasher.finalize())
+    fn build_idempotency_key(
+        transferor: &str, transferee: &str,
+        tracking_number: Option<&str>, po_number: Option<&str>,
+        invoice_number: Option<&str>, items: &[FastBoundTransferItem],
+    ) -> String {
+        let serials: Vec<&str> = items.iter().map(|i| i.serial.as_str()).collect();
+        let data = format!(
+            "{}\n{}\n{}\n{}\n{}\n{}\n{}",
+            Utc::now().format("%Y-%m-%d"),
+            transferor, transferee,
+            tracking_number.unwrap_or(""),
+            po_number.unwrap_or(""),
+            invoice_number.unwrap_or(""),
+            serials.join("\n"),
+        );
+
+        let mut hasher = Sha256::new();
+        hasher.update(data.as_bytes());
+        format!("{:x}", hasher.finalize())
+    }
 }
-
-async fn send_post_request(json_payload: &str) -> Result<(), Box<dyn Error>> {
-    let auth_string = BASE64.encode(format!("{}:{}", USERNAME, PASSWORD));
-    let mut headers = HeaderMap::new();
-    headers.insert(
-        AUTHORIZATION,
-        HeaderValue::from_str(&format!("Basic {}", auth_string))?,
-    );
-    headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
-
-    let client = reqwest::Client::new();
-    let response = client
-        .post(API_URL)
-        .headers(headers)
-        .body(json_payload.to_string())
-        .send()
-        .await?;
-
-    println!("HTTP Code: {}", response.status());
-    println!("Response: {}", response.text().await?);
-    Ok(())
-}
-
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn Error>> {
-    let shipment_date = Utc::now().format("%Y-%m-%d").to_string();
-    let transferor = "1-23-456-78-9A-12345";
-    let transferee = "1-23-456-78-9B-54321";
-    let tracking_number = "1Z999AA10123456784";
-    let po_number = "PO123456";
-    let invoice_number = "INV98765";
-
-    let items = vec![
-        Item {
-            manufacturer: "Glock".to_string(),
-            importer: None,
-            country: "Austria".to_string(),
-            model: "G17".to_string(),
-            caliber: "9mm".to_string(),
-            item_type: "Pistol".to_string(),
-            serial: "ABC123456".to_string(),
-            sku: "GLK-G17".to_string(),
-            mpn: "G17MPN".to_string(),
-            upc: "123456789012".to_string(),
-            barrel_length: 4.48,
-            overall_length: 8.03,
-            cost: 500.00,
-            price: 650.00,
-            condition: "New".to_string(),
-            note: "Brand new firearm".to_string(),
-        },
-        Item {
-            manufacturer: "Smith & Wesson".to_string(),
-            importer: None,
-            country: "USA".to_string(),
-            model: "M&P Shield".to_string(),
-            caliber: "9mm".to_string(),
-            item_type: "Pistol".to_string(),
-            serial: "XYZ987654".to_string(),
-            sku: "S&W-SHIELD".to_string(),
-            mpn: "SHIELDMPN".to_string(),
-            upc: "987654321098".to_string(),
-            barrel_length: 3.1,
-            overall_length: 6.1,
-            cost: 450.00,
-            price: 600.00,
-            condition: "New".to_string(),
-            note: "Compact pistol".to_string(),
-        },
-    ];
-
-    let serial_numbers: Vec<String> = items.iter().map(|item| item.serial.clone()).collect();
-    let idempotency_key = generate_idempotency_key(
-        &shipment_date,
-        transferor,
-        transferee,
-        tracking_number,
-        po_number,
-        invoice_number,
-        &serial_numbers,
-    );
-
-    let payload = TransferPayload {
-        schema: "https://schemas.fastbound.org/transfers-push-v1.json".to_string(),
-        idempotency_key,
-        transferor: transferor.to_string(),
-        transferee: transferee.to_string(),
-        transferee_emails: vec![
-            "transferee@example.com".to_string(),
-            "transferee@example.net".to_string(),
-            "transferee@example.org".to_string(),
-        ],
-        tracking_number: tracking_number.to_string(),
-        po_number: po_number.to_string(),
-        invoice_number: invoice_number.to_string(),
-        acquire_type: "Purchase".to_string(),
-        note: "This is a test transfer.".to_string(),
-        items,
-    };
-
-    let json_payload = serde_json::to_string(&payload)?;
-    send_post_request(&json_payload).await?;
-
-    Ok(())
-} 

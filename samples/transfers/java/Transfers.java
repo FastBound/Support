@@ -1,3 +1,9 @@
+// Reference implementation — not intended for production use without review and adaptation.
+// Source: https://github.com/FastBound/Support/tree/main/samples/transfers/java
+//
+// Requires: Java 17+
+// Dependencies: none — uses only java.net, java.security, java.nio, java.util, java.time, java.io
+
 import java.io.IOException;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
@@ -12,129 +18,69 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
+// --- Demo usage ---
+
 public class Transfers {
 
-    // Authentication credentials
     static final String USERNAME = "YOUR_USERNAME";
     static final String PASSWORD = "YOUR_PASSWORD";
 
-    // API endpoint
-    static final String URL = "https://cloud.fastbound.com/api/transfers";
-
     public static void main(String[] args) throws IOException, NoSuchAlgorithmException {
-        // Set shipment date (use actual shipment date when available)
-        String shipmentDate = LocalDate.now().toString(); // YYYY-MM-DD format
-
-        // Other required fields
-        String transferor = "1-23-456-78-9A-12345";   // Replace with actual FFL number
-        String transferee = "1-23-456-78-9B-54321";   // Replace with actual FFL number
-        String trackingNumber = "1Z999AA10123456784";  // Optional
-        String poNumber = "PO123456";                  // Optional
-        String invoiceNumber = "INV98765";             // Optional
-
-        // Define items
-        Map<String, Object> item1 = new LinkedHashMap<>();
-        item1.put("manufacturer", "Glock");
-        item1.put("importer", null);
-        item1.put("country", "Austria");
-        item1.put("model", "G17");
-        item1.put("caliber", "9mm");
-        item1.put("type", "Pistol");
-        item1.put("serial", "ABC123456");
-        item1.put("sku", "GLK-G17");
-        item1.put("mpn", "G17MPN");
-        item1.put("upc", "123456789012");
-        item1.put("barrelLength", 4.48);
-        item1.put("overallLength", 8.03);
-        item1.put("cost", 500.00);
-        item1.put("price", 650.00);
-        item1.put("condition", "New");
-        item1.put("note", "Brand new firearm");
-
-        Map<String, Object> item2 = new LinkedHashMap<>();
-        item2.put("manufacturer", "Smith & Wesson");
-        item2.put("importer", null);
-        item2.put("country", "USA");
-        item2.put("model", "M&P Shield");
-        item2.put("caliber", "9mm");
-        item2.put("type", "Pistol");
-        item2.put("serial", "XYZ987654");
-        item2.put("sku", "S&W-SHIELD");
-        item2.put("mpn", "SHIELDMPN");
-        item2.put("upc", "987654321098");
-        item2.put("barrelLength", 3.1);
-        item2.put("overallLength", 6.1);
-        item2.put("cost", 450.00);
-        item2.put("price", 600.00);
-        item2.put("condition", "New");
-        item2.put("note", "Compact pistol");
+        String transferor = "1-23-456-78-9A-12345";
+        String transferee = "1-23-456-78-9B-54321";
 
         List<Map<String, Object>> items = new ArrayList<>();
-        items.add(item1);
-        items.add(item2);
+        items.add(FastBoundTransferItem.create(
+            "Glock", "Glock, Inc.", "Austria", "17", "9X19", "Pistol",
+            "ABC123456", "GLK-G17", "PA1750203", "764503022616",
+            4.48, 8.03, 500.00, 650.00, "New",
+            "Gen 5, nDLC finish, factory case, 3x17rd mags, loader, brush"));
+        items.add(FastBoundTransferItem.create(
+            "Smith & Wesson", null, null, "M&P 9 Shield", "9MM", "Pistol",
+            "XYZ987654", "S&W-SHIELD", "10035", "022188864151",
+            3.1, 6.1, 450.00, 600.00, "New",
+            "No thumb safety, factory case, 7rd flush and 8rd extended mags"));
 
-        // Extract serial numbers for idempotency key
-        List<String> serialNumbers = new ArrayList<>();
-        for (Map<String, Object> item : items) {
-            serialNumbers.add((String) item.get("serial"));
-        }
+        var client = new FastBoundTransferClient(USERNAME, PASSWORD);
+        Map<String, Object> payload = FastBoundTransferPayload.create(
+            transferor, transferee, items,
+            List.of("transferee@example.com"),
+            "1Z999AA10123456784", "PO123456", "INV98765", "Purchase",
+            "2-unit dealer stock order, shipped UPS Ground insured, signature required on delivery");
 
-        // Generate idempotency key based on shipment details
-        List<String> idempotencyParts = new ArrayList<>();
-        idempotencyParts.add(shipmentDate);
-        idempotencyParts.add(transferor);
-        idempotencyParts.add(transferee);
-        idempotencyParts.add(trackingNumber);
-        idempotencyParts.add(poNumber);
-        idempotencyParts.add(invoiceNumber);
-        idempotencyParts.addAll(serialNumbers);
+        int[] result = client.sendTransfer(payload);
+        // result[0] is status code, response body is printed inside sendTransfer
+    }
+}
 
-        MessageDigest digest = MessageDigest.getInstance("SHA-256");
-        byte[] hash = digest.digest(
-            String.join("\n", idempotencyParts).getBytes(StandardCharsets.UTF_8)
-        );
-        StringBuilder idempotencyKey = new StringBuilder();
-        for (byte b : hash) {
-            idempotencyKey.append(String.format("%02x", b));
-        }
+// --- Reusable client ---
 
-        // Construct the payload
-        Map<String, Object> payload = new LinkedHashMap<>();
-        payload.put("$schema", "https://schemas.fastbound.org/transfers-push-v1.json");
-        payload.put("idempotency_key", idempotencyKey.toString());
-        payload.put("transferor", transferor);
-        payload.put("transferee", transferee);
-        payload.put("transferee_emails", List.of(
-            "transferee@example.com",
-            "transferee@example.net",
-            "transferee@example.org"
-        ));
-        payload.put("tracking_number", trackingNumber);
-        payload.put("po_number", poNumber);
-        payload.put("invoice_number", invoiceNumber);
-        payload.put("acquire_type", "Purchase");
-        payload.put("note", "This is a test transfer.");
-        payload.put("items", items);
+class FastBoundTransferClient {
+    private final String apiUrl;
+    private final String authHeader;
 
-        String jsonData = toJson(payload);
+    FastBoundTransferClient(String username, String password) {
+        this(username, password, "https://cloud.fastbound.com/api/transfers");
+    }
 
-        // Create Basic Authentication header
-        String auth = Base64.getEncoder().encodeToString(
-            (USERNAME + ":" + PASSWORD).getBytes(StandardCharsets.UTF_8)
-        );
+    FastBoundTransferClient(String username, String password, String apiUrl) {
+        this.apiUrl = apiUrl;
+        this.authHeader = "Basic " + Base64.getEncoder().encodeToString(
+            (username + ":" + password).getBytes(StandardCharsets.UTF_8));
+    }
 
-        // Send POST request
-        HttpURLConnection conn = (HttpURLConnection) URI.create(URL).toURL().openConnection();
+    int[] sendTransfer(Map<String, Object> payload) throws IOException {
+        String jsonData = JsonWriter.toJson(payload);
+        HttpURLConnection conn = (HttpURLConnection) URI.create(apiUrl).toURL().openConnection();
         conn.setRequestMethod("POST");
         conn.setRequestProperty("Content-Type", "application/json");
-        conn.setRequestProperty("Authorization", "Basic " + auth);
+        conn.setRequestProperty("Authorization", authHeader);
         conn.setDoOutput(true);
 
         try (OutputStream os = conn.getOutputStream()) {
             os.write(jsonData.getBytes(StandardCharsets.UTF_8));
         }
 
-        // Print response
         int statusCode = conn.getResponseCode();
         java.io.InputStream responseStream = statusCode >= 400
             ? conn.getErrorStream()
@@ -145,9 +91,88 @@ public class Transfers {
 
         System.out.println("HTTP Code: " + statusCode);
         System.out.println("Response: " + responseBody);
+        return new int[]{ statusCode };
+    }
+}
+
+// --- Domain types ---
+
+class FastBoundTransferItem {
+    static Map<String, Object> create(
+            String manufacturer, String importer, String country,
+            String model, String caliber, String type, String serial,
+            String sku, String mpn, String upc,
+            Double barrelLength, Double overallLength,
+            Double cost, Double price,
+            String condition, String note) {
+        Map<String, Object> item = new LinkedHashMap<>();
+        item.put("manufacturer", manufacturer);
+        item.put("importer", importer);
+        item.put("country", country);
+        item.put("model", model);
+        item.put("caliber", caliber);
+        item.put("type", type);
+        item.put("serial", serial);
+        item.put("sku", sku);
+        item.put("mpn", mpn);
+        item.put("upc", upc);
+        item.put("barrelLength", barrelLength);
+        item.put("overallLength", overallLength);
+        item.put("cost", cost);
+        item.put("price", price);
+        item.put("condition", condition);
+        item.put("note", note);
+        return item;
+    }
+}
+
+class FastBoundTransferPayload {
+    static Map<String, Object> create(
+            String transferor, String transferee, List<Map<String, Object>> items,
+            List<String> transfereeEmails, String trackingNumber, String poNumber,
+            String invoiceNumber, String acquireType, String note) throws NoSuchAlgorithmException {
+        String idempotencyKey = buildIdempotencyKey(transferor, transferee, trackingNumber, poNumber, invoiceNumber, items);
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("$schema", "https://schemas.fastbound.org/transfers-push-v1.json");
+        payload.put("idempotency_key", idempotencyKey);
+        payload.put("transferor", transferor);
+        payload.put("transferee", transferee);
+        payload.put("transferee_emails", transfereeEmails);
+        payload.put("tracking_number", trackingNumber);
+        payload.put("po_number", poNumber);
+        payload.put("invoice_number", invoiceNumber);
+        payload.put("acquire_type", acquireType);
+        payload.put("note", note);
+        payload.put("items", items);
+        return payload;
     }
 
-    // Minimal JSON serializer using only the standard library
+    private static String buildIdempotencyKey(
+            String transferor, String transferee,
+            String trackingNumber, String poNumber, String invoiceNumber,
+            List<Map<String, Object>> items) throws NoSuchAlgorithmException {
+        List<String> parts = new ArrayList<>();
+        parts.add(LocalDate.now().toString());
+        parts.add(transferor);
+        parts.add(transferee);
+        parts.add(trackingNumber != null ? trackingNumber : "");
+        parts.add(poNumber != null ? poNumber : "");
+        parts.add(invoiceNumber != null ? invoiceNumber : "");
+        for (Map<String, Object> item : items) {
+            parts.add((String) item.get("serial"));
+        }
+
+        MessageDigest digest = MessageDigest.getInstance("SHA-256");
+        byte[] hash = digest.digest(String.join("\n", parts).getBytes(StandardCharsets.UTF_8));
+        StringBuilder sb = new StringBuilder();
+        for (byte b : hash) {
+            sb.append(String.format("%02x", b));
+        }
+        return sb.toString();
+    }
+}
+
+class JsonWriter {
     @SuppressWarnings("unchecked")
     static String toJson(Object value) {
         if (value == null) {
@@ -160,7 +185,6 @@ public class Transfers {
                           .replace("\t", "\\t") + "\"";
         } else if (value instanceof Number) {
             String str = value.toString();
-            // Remove trailing ".0" for whole numbers
             if (str.endsWith(".0")) {
                 str = str.substring(0, str.length() - 2);
             }

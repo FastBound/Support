@@ -1,3 +1,9 @@
+// Reference implementation — not intended for production use without review and adaptation.
+// Source: https://github.com/FastBound/Support/tree/main/samples/transfers/golang
+//
+// Requires: Go 1.21+
+// Dependencies: none — uses only the standard library
+
 package main
 
 import (
@@ -6,22 +12,125 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"net/http"
 	"strings"
 	"time"
 )
 
+// --- Demo usage ---
+
 const (
 	USERNAME = "YOUR_USERNAME"
 	PASSWORD = "YOUR_PASSWORD"
-	API_URL  = "https://cloud.fastbound.com/api/transfers"
 )
 
-type Item struct {
+func main() {
+	transferor := "1-23-456-78-9A-12345"
+	transferee := "1-23-456-78-9B-54321"
+
+	items := []FastBoundTransferItem{
+		{
+			Manufacturer:  "Glock",
+			Importer:      strPtr("Glock, Inc."),
+			Country:       strPtr("Austria"),
+			Model:         "17",
+			Caliber:       "9X19",
+			Type:          "Pistol",
+			Serial:        "ABC123456",
+			SKU:           "GLK-G17",
+			MPN:           "PA1750203",
+			UPC:           "764503022616",
+			BarrelLength:  4.48,
+			OverallLength: 8.03,
+			Cost:          500.00,
+			Price:         650.00,
+			Condition:     "New",
+			Note:          "Gen 5, nDLC finish, factory case, 3x17rd mags, loader, brush",
+		},
+		{
+			Manufacturer:  "Smith & Wesson",
+			Importer:      nil,
+			Country:       nil,
+			Model:         "M&P 9 Shield",
+			Caliber:       "9MM",
+			Type:          "Pistol",
+			Serial:        "XYZ987654",
+			SKU:           "S&W-SHIELD",
+			MPN:           "10035",
+			UPC:           "022188864151",
+			BarrelLength:  3.1,
+			OverallLength: 6.1,
+			Cost:          450.00,
+			Price:         600.00,
+			Condition:     "New",
+			Note:          "No thumb safety, factory case, 7rd flush and 8rd extended mags",
+		},
+	}
+
+	client := NewFastBoundTransferClient(USERNAME, PASSWORD, "")
+	payload := NewFastBoundTransferPayload(
+		transferor, transferee, items,
+		[]string{"transferee@example.com"},
+		"1Z999AA10123456784", "PO123456", "INV98765", "Purchase",
+		"2-unit dealer stock order, shipped UPS Ground insured, signature required on delivery",
+	)
+
+	statusCode, body, err := client.SendTransfer(payload)
+	if err != nil {
+		fmt.Println("Error:", err)
+		return
+	}
+	fmt.Printf("HTTP Code: %d\n", statusCode)
+	fmt.Println("Response:", body)
+}
+
+func strPtr(s string) *string { return &s }
+
+// --- Reusable client ---
+
+type FastBoundTransferClient struct {
+	apiURL     string
+	authHeader string
+}
+
+func NewFastBoundTransferClient(username, password, apiURL string) *FastBoundTransferClient {
+	if apiURL == "" {
+		apiURL = "https://cloud.fastbound.com/api/transfers"
+	}
+	auth := base64.StdEncoding.EncodeToString([]byte(username + ":" + password))
+	return &FastBoundTransferClient{apiURL: apiURL, authHeader: "Basic " + auth}
+}
+
+func (c *FastBoundTransferClient) SendTransfer(payload *FastBoundTransferPayload) (int, string, error) {
+	jsonPayload, err := json.Marshal(payload)
+	if err != nil {
+		return 0, "", fmt.Errorf("marshal: %w", err)
+	}
+
+	req, err := http.NewRequest("POST", c.apiURL, bytes.NewBuffer(jsonPayload))
+	if err != nil {
+		return 0, "", fmt.Errorf("request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", c.authHeader)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return 0, "", fmt.Errorf("send: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+	return resp.StatusCode, string(body), nil
+}
+
+// --- Domain types ---
+
+type FastBoundTransferItem struct {
 	Manufacturer  string  `json:"manufacturer"`
 	Importer      *string `json:"importer"`
-	Country       string  `json:"country"`
+	Country       *string `json:"country"`
 	Model         string  `json:"model"`
 	Caliber       string  `json:"caliber"`
 	Type          string  `json:"type"`
@@ -37,89 +146,48 @@ type Item struct {
 	Note          string  `json:"note"`
 }
 
-type TransferPayload struct {
-	Schema           string   `json:"$schema"`
-	IdempotencyKey   string   `json:"idempotency_key"`
-	Transferor       string   `json:"transferor"`
-	Transferee       string   `json:"transferee"`
-	TransfereeEmails []string `json:"transferee_emails"`
-	TrackingNumber   string   `json:"tracking_number"`
-	PoNumber         string   `json:"po_number"`
-	InvoiceNumber    string   `json:"invoice_number"`
-	AcquireType      string   `json:"acquire_type"`
-	Note             string   `json:"note"`
-	Items            []Item   `json:"items"`
+type FastBoundTransferPayload struct {
+	Schema           string                  `json:"$schema"`
+	IdempotencyKey   string                  `json:"idempotency_key"`
+	Transferor       string                  `json:"transferor"`
+	Transferee       string                  `json:"transferee"`
+	TransfereeEmails []string                `json:"transferee_emails"`
+	TrackingNumber   string                  `json:"tracking_number"`
+	PoNumber         string                  `json:"po_number"`
+	InvoiceNumber    string                  `json:"invoice_number"`
+	AcquireType      string                  `json:"acquire_type"`
+	Note             string                  `json:"note"`
+	Items            []FastBoundTransferItem `json:"items"`
 }
 
-func generateIdempotencyKey(data []string) string {
-	hash := sha256.Sum256([]byte(strings.Join(data, "\n")))
-	return fmt.Sprintf("%x", hash)
-}
-
-func sendPostRequest(jsonPayload []byte) {
-	authString := base64.StdEncoding.EncodeToString([]byte(USERNAME + ":" + PASSWORD))
-
-	req, err := http.NewRequest("POST", API_URL, bytes.NewBuffer(jsonPayload))
-	if err != nil {
-		fmt.Println("Error creating request:", err)
-		return
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Basic "+authString)
-
-	client := &http.Client{}
-	resp, err := client.Do(req)
-	if err != nil {
-		fmt.Println("Error sending request:", err)
-		return
-	}
-	defer resp.Body.Close()
-
-	body, _ := ioutil.ReadAll(resp.Body)
-	fmt.Printf("HTTP Code: %d\n", resp.StatusCode)
-	fmt.Println("Response:", string(body))
-}
-
-func main() {
-	shipmentDate := time.Now().Format("2006-01-02")
-
-	transferor := "1-23-456-78-9A-12345"
-	transferee := "1-23-456-78-9B-54321"
-	trackingNumber := "1Z999AA10123456784"
-	poNumber := "PO123456"
-	invoiceNumber := "INV98765"
-
-	items := []Item{
-		{"Glock", nil, "Austria", "G17", "9mm", "Pistol", "ABC123456", "GLK-G17", "G17MPN", "123456789012", 4.48, 8.03, 500.00, 650.00, "New", "Brand new firearm"},
-		{"Smith & Wesson", nil, "USA", "M&P Shield", "9mm", "Pistol", "XYZ987654", "S&W-SHIELD", "SHIELDMPN", "987654321098", 3.1, 6.1, 450.00, 600.00, "New", "Compact pistol"},
-	}
-
-	serialNumbers := []string{}
-	for _, item := range items {
-		serialNumbers = append(serialNumbers, item.Serial)
-	}
-
-	idempotencyKey := generateIdempotencyKey(append([]string{shipmentDate, transferor, transferee, trackingNumber, poNumber, invoiceNumber}, serialNumbers...))
-
-	payload := TransferPayload{
+func NewFastBoundTransferPayload(
+	transferor, transferee string, items []FastBoundTransferItem,
+	transfereeEmails []string, trackingNumber, poNumber, invoiceNumber, acquireType, note string,
+) *FastBoundTransferPayload {
+	return &FastBoundTransferPayload{
 		Schema:           "https://schemas.fastbound.org/transfers-push-v1.json",
-		IdempotencyKey:   idempotencyKey,
+		IdempotencyKey:   buildIdempotencyKey(transferor, transferee, trackingNumber, poNumber, invoiceNumber, items),
 		Transferor:       transferor,
 		Transferee:       transferee,
-		TransfereeEmails: []string{"transferee@example.com", "transferee@example.net", "transferee@example.org"},
+		TransfereeEmails: transfereeEmails,
 		TrackingNumber:   trackingNumber,
 		PoNumber:         poNumber,
 		InvoiceNumber:    invoiceNumber,
-		AcquireType:      "Purchase",
-		Note:             "This is a test transfer.",
+		AcquireType:      acquireType,
+		Note:             note,
 		Items:            items,
 	}
+}
 
-	jsonPayload, err := json.Marshal(payload)
-	if err != nil {
-		fmt.Println("Error marshalling JSON:", err)
-		return
+func buildIdempotencyKey(transferor, transferee, trackingNumber, poNumber, invoiceNumber string, items []FastBoundTransferItem) string {
+	parts := []string{
+		time.Now().UTC().Format("2006-01-02"),
+		transferor, transferee,
+		trackingNumber, poNumber, invoiceNumber,
 	}
-
-	sendPostRequest(jsonPayload)
+	for _, item := range items {
+		parts = append(parts, item.Serial)
+	}
+	hash := sha256.Sum256([]byte(strings.Join(parts, "\n")))
+	return fmt.Sprintf("%x", hash)
 }

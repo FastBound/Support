@@ -72,34 +72,34 @@ public record FastBoundTransferPayload
     [JsonPropertyName("$schema")]
     public string Schema { get; init; } = "https://schemas.fastbound.org/transfers-push-v1.json";
 
-    [JsonPropertyName("Idempotency_Key")]
+    [JsonPropertyName("idempotency_key")]
     public required string IdempotencyKey { get; init; }
 
-    [JsonPropertyName("Transferor")]
+    [JsonPropertyName("transferor")]
     public required string Transferor { get; init; }
 
-    [JsonPropertyName("Transferee")]
+    [JsonPropertyName("transferee")]
     public required string Transferee { get; init; }
 
-    [JsonPropertyName("Transferee_Emails")]
+    [JsonPropertyName("transferee_emails")]
     public required string[] TransfereeEmails { get; init; }
 
-    [JsonPropertyName("Tracking_Number")]
+    [JsonPropertyName("tracking_number")]
     public string? TrackingNumber { get; init; }
 
-    [JsonPropertyName("Po_Number")]
+    [JsonPropertyName("po_number")]
     public string? PoNumber { get; init; }
 
-    [JsonPropertyName("Invoice_Number")]
+    [JsonPropertyName("invoice_number")]
     public string? InvoiceNumber { get; init; }
 
-    [JsonPropertyName("Acquire_Type")]
+    [JsonPropertyName("acquire_type")]
     public required string AcquireType { get; init; }
 
-    [JsonPropertyName("Note")]
+    [JsonPropertyName("note")]
     public string? Note { get; init; }
 
-    [JsonPropertyName("Items")]
+    [JsonPropertyName("items")]
     public required List<FastBoundTransferItem> Items { get; init; }
 
     /// <summary>
@@ -149,12 +149,22 @@ public record FastBoundTransferPayload
 /// Null Importer and Country indicate domestic manufacture.
 /// </summary>
 public record FastBoundTransferItem(
-    string Manufacturer, string? Importer, string? Country,
-    string Model, string Caliber, string Type, string Serial,
-    string? Sku, string? Mpn, string? Upc,
-    double? BarrelLength, double? OverallLength,
-    decimal? Cost, decimal? Price,
-    string? Condition, string? Note
+    [property: JsonPropertyName("manufacturer")] string Manufacturer,
+    [property: JsonPropertyName("importer")] string? Importer,
+    [property: JsonPropertyName("country")] string? Country,
+    [property: JsonPropertyName("model")] string Model,
+    [property: JsonPropertyName("caliber")] string Caliber,
+    [property: JsonPropertyName("type")] string Type,
+    [property: JsonPropertyName("serial")] string Serial,
+    [property: JsonPropertyName("sku")] string? Sku,
+    [property: JsonPropertyName("mpn")] string? Mpn,
+    [property: JsonPropertyName("upc")] string? Upc,
+    [property: JsonPropertyName("barrelLength")] double? BarrelLength,
+    [property: JsonPropertyName("overallLength")] double? OverallLength,
+    [property: JsonPropertyName("cost")] decimal? Cost,
+    [property: JsonPropertyName("price")] decimal? Price,
+    [property: JsonPropertyName("condition")] string? Condition,
+    [property: JsonPropertyName("note")] string? Note
 );
 
 // --- Source-generated JSON serialization (supports native AOT and .NET 10 single-file execution) ---
