@@ -1,13 +1,14 @@
+// Copyright © FastBound Inc. All rights reserved.
+//
 // Reference implementation — not intended for production use without review and adaptation.
 // Source: https://github.com/FastBound/Support/tree/main/samples/transfers/kotlin
 //
 // Requires: Kotlin 1.9+ / JDK 17+
-// Dependencies: none — uses only java.net, java.security, java.util, java.time
+// Dependencies: none — uses only java.net, java.security, java.util
 
 import java.net.HttpURLConnection
 import java.net.URI
 import java.security.MessageDigest
-import java.time.LocalDate
 import java.util.Base64
 
 // --- Demo usage ---
@@ -69,6 +70,11 @@ fun main() {
         invoiceNumber = "INV98765",
         acquireType = "Purchase",
         note = "2-unit dealer stock order, shipped UPS Ground insured, signature required on delivery",
+        // Prefer your own transaction id, so a retry — even days later, from another
+        // process — resolves to the same key. Bump the revision suffix when you mean to
+        // send a genuinely new transfer for the same order. Omit idempotencyKey entirely
+        // and one is derived from the shipment's identifying fields instead.
+        idempotencyKey = "po-123456:rev1",
     )
 
     val result = client.sendTransfer(payload)
@@ -137,11 +143,16 @@ object FastBoundTransferPayload {
         invoiceNumber: String? = null,
         acquireType: String = "Purchase",
         note: String? = null,
+        idempotencyKey: String? = null,
     ): Map<String, Any?> {
-        val idempotencyKey = buildIdempotencyKey(transferor, transferee, trackingNumber, poNumber, invoiceNumber, items)
+        val key = if (idempotencyKey == null) {
+            deriveIdempotencyKey(transferor, transferee, trackingNumber, poNumber, invoiceNumber, items)
+        } else {
+            validateIdempotencyKey(idempotencyKey)
+        }
         return linkedMapOf(
             "\$schema" to "https://schemas.fastbound.org/transfers-push-v1.json",
-            "idempotency_key" to idempotencyKey,
+            "idempotency_key" to key,
             "transferor" to transferor,
             "transferee" to transferee,
             "transferee_emails" to transfereeEmails,
@@ -154,22 +165,65 @@ object FastBoundTransferPayload {
         )
     }
 
-    private fun buildIdempotencyKey(
+    private fun validateIdempotencyKey(key: String): String {
+        require(key.isNotBlank()) { "idempotencyKey must not be blank." }
+        // The API caps the field at 255 characters; catching it here beats a 400 on a
+        // request that has already been accepted once under a truncated key.
+        require(key.length <= 255) {
+            "idempotencyKey must be at most 255 characters (got ${key.length})."
+        }
+        return key
+    }
+
+    /**
+     * Fallback for callers with no transaction id of their own to reuse.
+     *
+     * Reads no clock. A retry after a timeout is the case this key exists for, and a key
+     * containing today's date changes at midnight — mid-afternoon in US time zones —
+     * handing the retry a fresh key and creating the duplicate it was meant to stop.
+     * Serials are sorted because item order carries no meaning, so a retry that
+     * re-serializes from an unordered source must not read as a second shipment.
+     */
+    private fun deriveIdempotencyKey(
         transferor: String, transferee: String,
         trackingNumber: String?, poNumber: String?, invoiceNumber: String?,
         items: List<FastBoundTransferItem>,
     ): String {
-        val data = listOf(
-            LocalDate.now().toString(),
-            transferor, transferee,
-            trackingNumber ?: "", poNumber ?: "", invoiceNumber ?: "",
-            *items.map { it.serial }.toTypedArray(),
-        ).joinToString("\n")
+        require(!trackingNumber.isNullOrEmpty() || !poNumber.isNullOrEmpty() || !invoiceNumber.isNullOrEmpty()) {
+            "Cannot derive an idempotency key from the FFL numbers and serials alone: two " +
+                "separate orders of the same firearms between the same parties would collide and " +
+                "the second would be dropped as a duplicate. Pass idempotencyKey, or supply a " +
+                "tracking, PO or invoice number."
+        }
 
-        return MessageDigest.getInstance("SHA-256")
-            .digest(data.toByteArray())
+        // Natural (ordinal) sort, not locale-aware, so that every language port of this
+        // sample agrees on the key for the same transfer.
+        val serials = items.map { it.serial }.sorted()
+        val data = canonicalize(
+            listOf(
+                transferor, transferee,
+                trackingNumber ?: "", poNumber ?: "", invoiceNumber ?: "",
+            ) + serials,
+        )
+
+        val digest = MessageDigest.getInstance("SHA-256")
+            .digest(data.toByteArray(Charsets.UTF_8))
             .joinToString("") { "%02x".format(it) }
+        return "sha256:$digest"
     }
+
+    /**
+     * Length-prefixes each part so no field can impersonate another.
+     *
+     * Concatenating with a plain separator is ambiguous when a field may contain that
+     * separator and the tail is variable-length: invoice_number "INV-1\nABC123" with no
+     * items and invoice_number "INV-1" with serial "ABC123" produce the same joined
+     * string, so two different transfers collide on one key. Prefixing with the UTF-8
+     * byte count — bytes, not characters, so ports to other languages agree — makes the
+     * encoding unambiguous.
+     */
+    private fun canonicalize(parts: List<String>): String =
+        parts.joinToString("") { "${it.toByteArray(Charsets.UTF_8).size}:$it" }
 }
 
 private fun FastBoundTransferItem.toMap(): Map<String, Any?> = linkedMapOf(

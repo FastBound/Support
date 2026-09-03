@@ -1,3 +1,5 @@
+// Copyright © FastBound Inc. All rights reserved.
+//
 // Reference implementation — not intended for production use without review and adaptation.
 // Source: https://github.com/FastBound/Support/tree/main/samples/transfers/cpp
 //
@@ -8,10 +10,11 @@
 //   Linux/macOS: g++ -std=c++17 -o transfers transfers.cpp -lcurl -lssl -lcrypto
 //   Windows (vcpkg): cl /std:c++17 transfers.cpp /link libcurl.lib libssl.lib libcrypto.lib
 
-#include <ctime>
+#include <algorithm>
 #include <iomanip>
 #include <iostream>
 #include <optional>
+#include <stdexcept>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -111,23 +114,65 @@ static std::string json_opt(const std::string &key, const std::optional<std::str
     return "\"" + key + "\":null";
 }
 
-static std::string build_idempotency_key(
+// Length-prefixes each part so no field can impersonate another.
+//
+// Concatenating with a plain separator is ambiguous when a field may contain that
+// separator and the tail is variable-length: invoice_number "INV-1\nABC123" with no items
+// and invoice_number "INV-1" with serial "ABC123" produce the same joined string, so two
+// different transfers collide on one key. Prefixing with the UTF-8 byte count — bytes,
+// not characters, so ports to other languages agree — makes the encoding unambiguous.
+static std::string canonicalize(const std::vector<std::string> &parts) {
+    std::ostringstream data;
+    for (const auto &part : parts)
+        data << part.size() << ":" << part;
+    return data.str();
+}
+
+std::string validate_idempotency_key(const std::string &key) {
+    if (key.find_first_not_of(" \t\n\r\f\v") == std::string::npos)
+        throw std::invalid_argument("idempotencyKey must not be blank.");
+
+    // The API caps the field at 255 characters; catching it here beats a 400 on a
+    // request that has already been accepted once under a truncated key.
+    if (key.size() > 255)
+        throw std::invalid_argument(
+            "idempotencyKey must be at most 255 characters (got " + std::to_string(key.size()) + ").");
+
+    return key;
+}
+
+// Fallback for callers with no transaction id of their own to reuse.
+//
+// Reads no clock. A retry after a timeout is the case this key exists for, and a key
+// containing today's date changes at midnight — mid-afternoon in US time zones — handing
+// the retry a fresh key and creating the duplicate it was meant to stop. Serials are
+// sorted because item order carries no meaning, so a retry that re-serializes from an
+// unordered source must not read as a second shipment.
+std::string derive_idempotency_key(
     const std::string &transferor, const std::string &transferee,
     const std::string &tracking_number, const std::string &po_number,
     const std::string &invoice_number, const std::vector<FastBoundTransferItem> &items) {
 
-    std::time_t now = std::time(nullptr);
-    char date_buf[11];
-    std::strftime(date_buf, sizeof(date_buf), "%Y-%m-%d", std::gmtime(&now));
+    if (tracking_number.empty() && po_number.empty() && invoice_number.empty())
+        throw std::invalid_argument(
+            "Cannot derive an idempotency key from the FFL numbers and serials alone: two "
+            "separate orders of the same firearms between the same parties would collide and "
+            "the second would be dropped as a duplicate. Pass idempotencyKey, or supply a "
+            "tracking, PO or invoice number.");
 
-    std::ostringstream data;
-    data << date_buf << "\n"
-         << transferor << "\n" << transferee << "\n"
-         << tracking_number << "\n" << po_number << "\n" << invoice_number;
+    std::vector<std::string> serials;
+    serials.reserve(items.size());
     for (const auto &item : items)
-        data << "\n" << item.serial;
+        serials.push_back(item.serial);
+    // Byte-order sort, not locale-aware, so that every language port of this sample
+    // agrees on the key for the same transfer.
+    std::sort(serials.begin(), serials.end());
 
-    return sha256_hex(data.str());
+    std::vector<std::string> parts = {
+        transferor, transferee, tracking_number, po_number, invoice_number};
+    parts.insert(parts.end(), serials.begin(), serials.end());
+
+    return "sha256:" + sha256_hex(canonicalize(parts));
 }
 
 static std::string build_payload_json(
@@ -276,8 +321,11 @@ int main() {
     std::string po_number = "PO123456";
     std::string invoice_number = "INV98765";
 
-    std::string idempotency_key = build_idempotency_key(
-        transferor, transferee, tracking_number, po_number, invoice_number, items);
+    // Prefer your own transaction id, so a retry — even days later, from another process
+    // — resolves to the same key. Bump the revision suffix when you mean to send a
+    // genuinely new transfer for the same order. Call derive_idempotency_key() instead
+    // and one is derived from the shipment's identifying fields.
+    std::string idempotency_key = validate_idempotency_key("po-123456:rev1");
 
     std::string payload = build_payload_json(
         idempotency_key, transferor, transferee,

@@ -1,8 +1,10 @@
+// Copyright © FastBound Inc. All rights reserved.
+//
 // Reference implementation — not intended for production use without review and adaptation.
 // Source: https://github.com/FastBound/Support/tree/main/samples/transfers/java
 //
 // Requires: Java 17+
-// Dependencies: none — uses only java.net, java.security, java.nio, java.util, java.time, java.io
+// Dependencies: none — uses only java.net, java.security, java.nio, java.util, java.io
 
 import java.io.IOException;
 import java.io.OutputStream;
@@ -11,9 +13,9 @@ import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
-import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.Base64;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -46,7 +48,12 @@ public class Transfers {
             transferor, transferee, items,
             List.of("transferee@example.com"),
             "1Z999AA10123456784", "PO123456", "INV98765", "Purchase",
-            "2-unit dealer stock order, shipped UPS Ground insured, signature required on delivery");
+            "2-unit dealer stock order, shipped UPS Ground insured, signature required on delivery",
+            // Prefer your own transaction id, so a retry — even days later, from another
+            // process — resolves to the same key. Bump the revision suffix when you mean
+            // to send a genuinely new transfer for the same order. Pass null instead and
+            // one is derived from the shipment's identifying fields.
+            "po-123456:rev1");
 
         int[] result = client.sendTransfer(payload);
         // result[0] is status code, response body is printed inside sendTransfer
@@ -127,14 +134,22 @@ class FastBoundTransferItem {
 }
 
 class FastBoundTransferPayload {
+    /**
+     * Builds a transfer payload. Pass idempotencyKey to reuse your own transaction id —
+     * the preferred form; pass null to derive one from the shipment's identifying fields
+     * instead.
+     */
     static Map<String, Object> create(
             String transferor, String transferee, List<Map<String, Object>> items,
             List<String> transfereeEmails, String trackingNumber, String poNumber,
-            String invoiceNumber, String acquireType, String note) throws NoSuchAlgorithmException {
-        String idempotencyKey = buildIdempotencyKey(transferor, transferee, trackingNumber, poNumber, invoiceNumber, items);
+            String invoiceNumber, String acquireType, String note,
+            String idempotencyKey) throws NoSuchAlgorithmException {
+        String key = idempotencyKey == null
+            ? deriveIdempotencyKey(transferor, transferee, trackingNumber, poNumber, invoiceNumber, items)
+            : validateIdempotencyKey(idempotencyKey);
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("$schema", "https://schemas.fastbound.org/transfers-push-v1.json");
-        payload.put("idempotency_key", idempotencyKey);
+        payload.put("idempotency_key", key);
         payload.put("transferor", transferor);
         payload.put("transferee", transferee);
         payload.put("transferee_emails", transfereeEmails);
@@ -147,26 +162,83 @@ class FastBoundTransferPayload {
         return payload;
     }
 
-    private static String buildIdempotencyKey(
+    private static String validateIdempotencyKey(String key) {
+        if (key.isBlank()) {
+            throw new IllegalArgumentException("idempotencyKey must not be blank.");
+        }
+        // The API caps the field at 255 characters; catching it here beats a 400 on a
+        // request that has already been accepted once under a truncated key.
+        if (key.length() > 255) {
+            throw new IllegalArgumentException(
+                "idempotencyKey must be at most 255 characters (got " + key.length() + ").");
+        }
+        return key;
+    }
+
+    /**
+     * Fallback for callers with no transaction id of their own to reuse.
+     *
+     * <p>Reads no clock. A retry after a timeout is the case this key exists for, and a
+     * key containing today's date changes at midnight — mid-afternoon in US time zones —
+     * handing the retry a fresh key and creating the duplicate it was meant to stop.
+     * Serials are sorted because item order carries no meaning, so a retry that
+     * re-serializes from an unordered source must not read as a second shipment.
+     */
+    private static String deriveIdempotencyKey(
             String transferor, String transferee,
             String trackingNumber, String poNumber, String invoiceNumber,
             List<Map<String, Object>> items) throws NoSuchAlgorithmException {
+        if (isEmpty(trackingNumber) && isEmpty(poNumber) && isEmpty(invoiceNumber)) {
+            throw new IllegalArgumentException(
+                "Cannot derive an idempotency key from the FFL numbers and serials alone: two "
+                + "separate orders of the same firearms between the same parties would collide and "
+                + "the second would be dropped as a duplicate. Pass idempotencyKey, or supply a "
+                + "tracking, PO or invoice number.");
+        }
+
+        List<String> serials = new ArrayList<>();
+        for (Map<String, Object> item : items) {
+            serials.add((String) item.get("serial"));
+        }
+        // Natural (ordinal) sort, not locale-aware, so that every language port of this
+        // sample agrees on the key for the same transfer.
+        Collections.sort(serials);
+
         List<String> parts = new ArrayList<>();
-        parts.add(LocalDate.now().toString());
         parts.add(transferor);
         parts.add(transferee);
         parts.add(trackingNumber != null ? trackingNumber : "");
         parts.add(poNumber != null ? poNumber : "");
         parts.add(invoiceNumber != null ? invoiceNumber : "");
-        for (Map<String, Object> item : items) {
-            parts.add((String) item.get("serial"));
-        }
+        parts.addAll(serials);
 
         MessageDigest digest = MessageDigest.getInstance("SHA-256");
-        byte[] hash = digest.digest(String.join("\n", parts).getBytes(StandardCharsets.UTF_8));
-        StringBuilder sb = new StringBuilder();
+        byte[] hash = digest.digest(canonicalize(parts).getBytes(StandardCharsets.UTF_8));
+        StringBuilder sb = new StringBuilder("sha256:");
         for (byte b : hash) {
             sb.append(String.format("%02x", b));
+        }
+        return sb.toString();
+    }
+
+    private static boolean isEmpty(String value) {
+        return value == null || value.isEmpty();
+    }
+
+    /**
+     * Length-prefixes each part so no field can impersonate another.
+     *
+     * <p>Concatenating with a plain separator is ambiguous when a field may contain that
+     * separator and the tail is variable-length: invoice_number "INV-1\nABC123" with no
+     * items and invoice_number "INV-1" with serial "ABC123" produce the same joined
+     * string, so two different transfers collide on one key. Prefixing with the UTF-8
+     * byte count — bytes, not characters, so ports to other languages agree — makes the
+     * encoding unambiguous.
+     */
+    private static String canonicalize(List<String> parts) {
+        StringBuilder sb = new StringBuilder();
+        for (String part : parts) {
+            sb.append(part.getBytes(StandardCharsets.UTF_8).length).append(':').append(part);
         }
         return sb.toString();
     }

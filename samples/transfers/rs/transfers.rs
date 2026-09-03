@@ -7,18 +7,18 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 base64 = "0.21"
 sha2 = "0.10"
-chrono = "0.4"
 ---
+// Copyright © FastBound Inc. All rights reserved.
+//
 // Reference implementation — not intended for production use without review and adaptation.
 // Source: https://github.com/FastBound/Support/tree/main/samples/transfers/rs
 //
 // Requires: Rust 1.77+ (cargo script)
-// Dependencies: reqwest, tokio, serde, serde_json, sha2, base64, chrono
+// Dependencies: reqwest, tokio, serde, serde_json, sha2, base64
 //
 // Run: cargo +nightly -Zscript transfers.rs
 
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
-use chrono::Utc;
 use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -84,7 +84,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
         Some("INV98765".into()),
         "Purchase",
         Some("2-unit dealer stock order, shipped UPS Ground insured, signature required on delivery".into()),
-    );
+        // Prefer your own transaction id, so a retry — even days later, from another
+        // process — resolves to the same key. Bump the revision suffix when you mean to
+        // send a genuinely new transfer for the same order. Pass None instead and one is
+        // derived from the shipment's identifying fields.
+        Some("po-123456:rev1".into()),
+    )?;
 
     let result = client.send_transfer(&payload).await?;
     println!("HTTP Code: {}", result.status_code);
@@ -178,20 +183,28 @@ struct FastBoundTransferPayload {
 }
 
 impl FastBoundTransferPayload {
+    /// Builds a transfer payload. Pass `idempotency_key` to reuse your own transaction id
+    /// — the preferred form; pass `None` to derive one from the shipment's identifying
+    /// fields instead.
+    #[allow(clippy::too_many_arguments)]
     fn create(
         transferor: &str, transferee: &str, items: Vec<FastBoundTransferItem>,
         transferee_emails: Vec<String>,
         tracking_number: Option<String>, po_number: Option<String>,
         invoice_number: Option<String>, acquire_type: &str, note: Option<String>,
-    ) -> Self {
-        let idempotency_key = Self::build_idempotency_key(
-            transferor, transferee,
-            tracking_number.as_deref(), po_number.as_deref(),
-            invoice_number.as_deref(), &items,
-        );
-        Self {
+        idempotency_key: Option<String>,
+    ) -> Result<Self, String> {
+        let key = match idempotency_key {
+            None => Self::derive_idempotency_key(
+                transferor, transferee,
+                tracking_number.as_deref(), po_number.as_deref(),
+                invoice_number.as_deref(), &items,
+            )?,
+            Some(key) => Self::validate_idempotency_key(&key)?,
+        };
+        Ok(Self {
             schema: "https://schemas.fastbound.org/transfers-push-v1.json".into(),
-            idempotency_key,
+            idempotency_key: key,
             transferor: transferor.into(),
             transferee: transferee.into(),
             transferee_emails,
@@ -201,27 +214,78 @@ impl FastBoundTransferPayload {
             acquire_type: acquire_type.into(),
             note,
             items,
-        }
+        })
     }
 
-    fn build_idempotency_key(
+    fn validate_idempotency_key(key: &str) -> Result<String, String> {
+        if key.trim().is_empty() {
+            return Err("idempotency_key must not be blank.".into());
+        }
+        // The API caps the field at 255 characters; catching it here beats a 400 on a
+        // request that has already been accepted once under a truncated key.
+        let length = key.chars().count();
+        if length > 255 {
+            return Err(format!(
+                "idempotency_key must be at most 255 characters (got {length})."
+            ));
+        }
+        Ok(key.to_owned())
+    }
+
+    /// Fallback for callers with no transaction id of their own to reuse.
+    ///
+    /// Reads no clock. A retry after a timeout is the case this key exists for, and a key
+    /// containing today's date changes at midnight — mid-afternoon in US time zones —
+    /// handing the retry a fresh key and creating the duplicate it was meant to stop.
+    /// Serials are sorted because item order carries no meaning, so a retry that
+    /// re-serializes from an unordered source must not read as a second shipment.
+    fn derive_idempotency_key(
         transferor: &str, transferee: &str,
         tracking_number: Option<&str>, po_number: Option<&str>,
         invoice_number: Option<&str>, items: &[FastBoundTransferItem],
-    ) -> String {
-        let serials: Vec<&str> = items.iter().map(|i| i.serial.as_str()).collect();
-        let data = format!(
-            "{}\n{}\n{}\n{}\n{}\n{}\n{}",
-            Utc::now().format("%Y-%m-%d"),
-            transferor, transferee,
+    ) -> Result<String, String> {
+        let is_blank = |value: Option<&str>| value.unwrap_or("").is_empty();
+        if is_blank(tracking_number) && is_blank(po_number) && is_blank(invoice_number) {
+            return Err(
+                "Cannot derive an idempotency key from the FFL numbers and serials alone: two \
+                 separate orders of the same firearms between the same parties would collide and \
+                 the second would be dropped as a duplicate. Pass idempotency_key, or supply a \
+                 tracking, PO or invoice number."
+                    .into(),
+            );
+        }
+
+        // Byte-order sort, not locale-aware, so that every language port of this sample
+        // agrees on the key for the same transfer.
+        let mut serials: Vec<&str> = items.iter().map(|i| i.serial.as_str()).collect();
+        serials.sort_unstable();
+
+        let mut parts = vec![
+            transferor,
+            transferee,
             tracking_number.unwrap_or(""),
             po_number.unwrap_or(""),
             invoice_number.unwrap_or(""),
-            serials.join("\n"),
-        );
+        ];
+        parts.extend(serials);
 
         let mut hasher = Sha256::new();
-        hasher.update(data.as_bytes());
-        format!("{:x}", hasher.finalize())
+        hasher.update(canonicalize(&parts).as_bytes());
+        Ok(format!("sha256:{:x}", hasher.finalize()))
     }
+}
+
+/// Length-prefixes each part so no field can impersonate another.
+///
+/// Concatenating with a plain separator is ambiguous when a field may contain that
+/// separator and the tail is variable-length: `invoice_number` `"INV-1\nABC123"` with no
+/// items and `invoice_number` `"INV-1"` with serial `"ABC123"` produce the same joined
+/// string, so two different transfers collide on one key. Prefixing with the UTF-8 byte
+/// count — bytes, not characters, so ports to other languages agree — makes the encoding
+/// unambiguous.
+fn canonicalize(parts: &[&str]) -> String {
+    parts
+        .iter()
+        .map(|part| format!("{}:{}", part.len(), part))
+        .collect()
 }

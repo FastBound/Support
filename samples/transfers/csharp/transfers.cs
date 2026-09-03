@@ -1,3 +1,5 @@
+// Copyright © FastBound Inc. All rights reserved.
+//
 // Reference implementation — not intended for production use without review and adaptation.
 // Source: https://github.com/FastBound/Support/tree/main/samples/transfers/csharp
 //
@@ -29,7 +31,12 @@ var payload = FastBoundTransferPayload.Create(
     poNumber: "PO123456",
     invoiceNumber: "INV98765",
     acquireType: "Purchase",
-    note: "2-unit dealer stock order, shipped UPS Ground insured, signature required on delivery"
+    note: "2-unit dealer stock order, shipped UPS Ground insured, signature required on delivery",
+    // Prefer your own transaction id, so a retry — even days later, from another
+    // process — resolves to the same key. Bump the revision suffix when you mean to
+    // send a genuinely new transfer for the same order. Omit idempotencyKey entirely
+    // and one is derived from the shipment's identifying fields instead.
+    idempotencyKey: "po-123456:rev1"
 );
 
 var result = await client.SendTransferAsync(payload);
@@ -103,15 +110,20 @@ public record FastBoundTransferPayload
     public required List<FastBoundTransferItem> Items { get; init; }
 
     /// <summary>
-    /// Preferred entry point. Handles idempotency key generation so callers don't have to.
+    /// Preferred entry point. Pass <paramref name="idempotencyKey"/> to reuse your own
+    /// transaction id — the preferred form; omit it and one is derived from the
+    /// shipment's identifying fields instead.
     /// </summary>
     public static FastBoundTransferPayload Create(
         string transferor, string transferee, List<FastBoundTransferItem> items,
         string[]? transfereeEmails = null, string? trackingNumber = null,
         string? poNumber = null, string? invoiceNumber = null,
-        string acquireType = "Purchase", string? note = null) => new()
+        string acquireType = "Purchase", string? note = null,
+        string? idempotencyKey = null) => new()
     {
-        IdempotencyKey = BuildIdempotencyKey(transferor, transferee, trackingNumber, poNumber, invoiceNumber, items),
+        IdempotencyKey = idempotencyKey is null
+            ? DeriveIdempotencyKey(transferor, transferee, trackingNumber, poNumber, invoiceNumber, items)
+            : ValidateIdempotencyKey(idempotencyKey),
         Transferor = transferor,
         Transferee = transferee,
         TransfereeEmails = transfereeEmails ?? [],
@@ -123,24 +135,83 @@ public record FastBoundTransferPayload
         Items = items
     };
 
+    private static string ValidateIdempotencyKey(string key)
+    {
+        if (string.IsNullOrWhiteSpace(key))
+        {
+            throw new ArgumentException("idempotencyKey must not be blank.", nameof(key));
+        }
+
+        // The API caps the field at 255 characters; catching it here beats a 400 on a
+        // request that has already been accepted once under a truncated key.
+        if (key.Length > 255)
+        {
+            throw new ArgumentException(
+                $"idempotencyKey must be at most 255 characters (got {key.Length}).", nameof(key));
+        }
+
+        return key;
+    }
+
     /// <summary>
-    /// Deterministic SHA-256 hash of the transfer's identifying fields.
-    /// Same inputs on the same date always produce the same key, preventing duplicate submissions.
+    /// Fallback for callers with no transaction id of their own to reuse.
     /// </summary>
-    private static string BuildIdempotencyKey(
+    /// <remarks>
+    /// Reads no clock. A retry after a timeout is the case this key exists for, and a key
+    /// containing today's date changes at midnight — mid-afternoon in US time zones —
+    /// handing the retry a fresh key and creating the duplicate it was meant to stop.
+    /// Serials are sorted because item order carries no meaning, so a retry that
+    /// re-serializes from an unordered source must not read as a second shipment.
+    /// </remarks>
+    private static string DeriveIdempotencyKey(
         string transferor, string transferee,
         string? trackingNumber, string? poNumber, string? invoiceNumber,
         List<FastBoundTransferItem> items)
     {
-        string data = string.Join("\n",
-            DateTime.UtcNow.ToString("yyyy-MM-dd"),
-            transferor, transferee,
-            trackingNumber, poNumber, invoiceNumber,
-            string.Join("\n", items.Select(i => i.Serial)));
+        if (string.IsNullOrEmpty(trackingNumber) && string.IsNullOrEmpty(poNumber)
+            && string.IsNullOrEmpty(invoiceNumber))
+        {
+            throw new ArgumentException(
+                "Cannot derive an idempotency key from the FFL numbers and serials alone: two "
+                + "separate orders of the same firearms between the same parties would collide and "
+                + "the second would be dropped as a duplicate. Pass idempotencyKey, or supply a "
+                + "tracking, PO or invoice number.");
+        }
 
-        using SHA256 sha = SHA256.Create();
-        return BitConverter.ToString(sha.ComputeHash(Encoding.UTF8.GetBytes(data)))
-            .Replace("-", "").ToLower();
+        // Ordinal sort, not culture-aware, so that every language port of this sample
+        // agrees on the key for the same transfer.
+        List<string> serials = [.. items.Select(i => i.Serial).Order(StringComparer.Ordinal)];
+
+        string data = Canonicalize([
+            transferor, transferee,
+            trackingNumber ?? "", poNumber ?? "", invoiceNumber ?? "",
+            .. serials
+        ]);
+
+        byte[] hash = SHA256.HashData(Encoding.UTF8.GetBytes(data));
+        return $"sha256:{Convert.ToHexString(hash).ToLowerInvariant()}";
+    }
+
+    /// <summary>
+    /// Length-prefixes each part so no field can impersonate another.
+    /// </summary>
+    /// <remarks>
+    /// Concatenating with a plain separator is ambiguous when a field may contain that
+    /// separator and the tail is variable-length: invoice_number "INV-1\nABC123" with no
+    /// items and invoice_number "INV-1" with serial "ABC123" produce the same joined
+    /// string, so two different transfers collide on one key. Prefixing with the UTF-8
+    /// byte count — bytes, not characters, so ports to other languages agree — makes the
+    /// encoding unambiguous.
+    /// </remarks>
+    private static string Canonicalize(IReadOnlyList<string> parts)
+    {
+        StringBuilder builder = new();
+        foreach (string part in parts)
+        {
+            builder.Append(Encoding.UTF8.GetByteCount(part)).Append(':').Append(part);
+        }
+
+        return builder.ToString();
     }
 }
 
